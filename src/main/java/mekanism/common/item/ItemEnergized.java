@@ -1,222 +1,102 @@
 package mekanism.common.item;
 
 import java.util.List;
-
-import mekanism.api.EnumColor;
-import mekanism.api.energy.IEnergizedItem;
-import mekanism.common.Mekanism;
-import mekanism.common.integration.IC2ItemManager;
-import mekanism.common.util.MekanismUtils;
-
-import net.minecraft.creativetab.CreativeTabs;
-import net.minecraft.entity.player.EntityPlayer;
+import java.util.function.Predicate;
+import javax.annotation.Nonnull;
+import mekanism.api.annotations.NonNull;
+import mekanism.api.inventory.AutomationType;
+import mekanism.api.math.FloatingLong;
+import mekanism.api.math.FloatingLongSupplier;
+import mekanism.common.capabilities.ItemCapabilityWrapper;
+import mekanism.common.capabilities.energy.BasicEnergyContainer;
+import mekanism.common.capabilities.energy.item.RateLimitEnergyHandler;
+import mekanism.common.config.MekanismConfig;
+import mekanism.common.util.StorageUtils;
+import net.minecraft.client.util.ITooltipFlag;
 import net.minecraft.item.Item;
+import net.minecraft.item.ItemGroup;
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
-import cpw.mods.fml.common.Optional.Interface;
-import cpw.mods.fml.common.Optional.InterfaceList;
-import cpw.mods.fml.common.Optional.Method;
+import net.minecraft.nbt.CompoundNBT;
+import net.minecraft.util.NonNullList;
+import net.minecraft.util.text.ITextComponent;
+import net.minecraft.world.World;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
+import net.minecraftforge.common.capabilities.ICapabilityProvider;
 
-import cofh.api.energy.IEnergyContainerItem;
-import ic2.api.item.IElectricItemManager;
-import ic2.api.item.ISpecialElectricItem;
+public class ItemEnergized extends Item {
 
-@InterfaceList({
-		@Interface(iface = "cofh.api.energy.IEnergyContainerItem", modid = "CoFHAPI|energy"),
-		@Interface(iface = "ic2.api.item.ISpecialElectricItem", modid = "IC2API")
-})
-public class ItemEnergized extends ItemMekanism implements IEnergizedItem, ISpecialElectricItem, IEnergyContainerItem
-{
-	/** The maximum amount of energy this item can hold. */
-	public double MAX_ELECTRICITY;
+    private final FloatingLongSupplier chargeRateSupplier;
+    private final FloatingLongSupplier maxEnergySupplier;
+    private final Predicate<@NonNull AutomationType> canExtract;
+    private final Predicate<@NonNull AutomationType> canInsert;
 
-	public ItemEnergized(double maxElectricity)
-	{
-		super();
-		MAX_ELECTRICITY = maxElectricity;
-		setMaxStackSize(1);
-		setMaxDamage(100);
-		setNoRepair();
-		setCreativeTab(Mekanism.tabMekanism);
-	}
+    public ItemEnergized(FloatingLongSupplier chargeRateSupplier, FloatingLongSupplier maxEnergySupplier, Properties properties) {
+        this(chargeRateSupplier, maxEnergySupplier, BasicEnergyContainer.manualOnly, BasicEnergyContainer.alwaysTrue, properties);
+    }
 
-	@Override
-	public void addInformation(ItemStack itemstack, EntityPlayer entityplayer, List list, boolean flag)
-	{
-		list.add(EnumColor.AQUA + MekanismUtils.localize("tooltip.storedEnergy") + ": " + EnumColor.GREY + MekanismUtils.getEnergyDisplay(getEnergy(itemstack)));
-	}
+    public ItemEnergized(FloatingLongSupplier chargeRateSupplier, FloatingLongSupplier maxEnergySupplier, Predicate<@NonNull AutomationType> canExtract,
+          Predicate<@NonNull AutomationType> canInsert, Properties properties) {
+        super(properties.maxStackSize(1));
+        this.chargeRateSupplier = chargeRateSupplier;
+        this.maxEnergySupplier = maxEnergySupplier;
+        this.canExtract = canExtract;
+        this.canInsert = canInsert;
+    }
 
-	public ItemStack getUnchargedItem()
-	{
-		ItemStack charged = new ItemStack(this);
-		charged.setItemDamage(100);
-		return charged;
-	}
+    @Override
+    public boolean showDurabilityBar(ItemStack stack) {
+        return true;
+    }
 
-	@Override
-	public void getSubItems(Item item, CreativeTabs tabs, List list)
-	{
-		ItemStack discharged = new ItemStack(this);
-		discharged.setItemDamage(100);
-		list.add(discharged);
-		ItemStack charged = new ItemStack(this);
-		setEnergy(charged, ((IEnergizedItem)charged.getItem()).getMaxEnergy(charged));
-		list.add(charged);
-	}
+    @Override
+    public double getDurabilityForDisplay(ItemStack stack) {
+        return StorageUtils.getEnergyDurabilityForDisplay(stack);
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public boolean canProvideEnergy(ItemStack itemStack)
-	{
-		return canSend(itemStack);
-	}
+    @Override
+    public int getRGBDurabilityForDisplay(ItemStack stack) {
+        return MekanismConfig.client.energyColor.get();
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public Item getChargedItem(ItemStack itemStack)
-	{
-		return this;
-	}
+    @Override
+    @OnlyIn(Dist.CLIENT)
+    public void addInformation(@Nonnull ItemStack stack, World world, @Nonnull List<ITextComponent> tooltip, @Nonnull ITooltipFlag flag) {
+        StorageUtils.addStoredEnergy(stack, tooltip, true);
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public Item getEmptyItem(ItemStack itemStack)
-	{
-		return this;
-	}
+    @Override
+    public void fillItemGroup(@Nonnull ItemGroup group, @Nonnull NonNullList<ItemStack> items) {
+        super.fillItemGroup(group, items);
+        if (isInGroup(group)) {
+            items.add(StorageUtils.getFilledEnergyVariant(new ItemStack(this), maxEnergySupplier.get()));
+        }
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public double getMaxCharge(ItemStack itemStack)
-	{
-		return 0;
-	}
+    protected FloatingLong getMaxEnergy(ItemStack stack) {
+        return maxEnergySupplier.get();
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public int getTier(ItemStack itemStack)
-	{
-		return 4;
-	}
+    protected FloatingLong getChargeRate(ItemStack stack) {
+        return chargeRateSupplier.get();
+    }
 
-	@Override
-	@Method(modid = "IC2API")
-	public double getTransferLimit(ItemStack itemStack)
-	{
-		return 0;
-	}
+    @Override
+    public ICapabilityProvider initCapabilities(ItemStack stack, CompoundNBT nbt) {
+        //Note: We interact with this capability using "manual" as the automation type, to ensure we can properly bypass the energy limit for extracting
+        // Internal is used by the "null" side, which is what will get used for most items
+        return new ItemCapabilityWrapper(stack, RateLimitEnergyHandler.create(() -> getChargeRate(stack), () -> getMaxEnergy(stack), canExtract, canInsert));
+    }
 
-	@Override
-	public double getEnergy(ItemStack itemStack)
-	{
-		if(itemStack.stackTagCompound == null)
-		{
-			return 0;
-		}
+    @Override
+    public boolean shouldCauseReequipAnimation(ItemStack oldStack, ItemStack newStack, boolean slotChanged) {
+        //Ignore NBT for energized items causing re-equip animations
+        return oldStack.getItem() != newStack.getItem();
+    }
 
-		double electricityStored = itemStack.stackTagCompound.getDouble("electricity");
-		itemStack.setItemDamage((int)Math.max(1, (Math.abs(((electricityStored/getMaxEnergy(itemStack))*100)-100))));
-
-		return electricityStored;
-	}
-
-	@Override
-	public void setEnergy(ItemStack itemStack, double amount)
-	{
-		if(itemStack.stackTagCompound == null)
-		{
-			itemStack.setTagCompound(new NBTTagCompound());
-		}
-
-		double electricityStored = Math.max(Math.min(amount, getMaxEnergy(itemStack)), 0);
-		itemStack.stackTagCompound.setDouble("electricity", electricityStored);
-		itemStack.setItemDamage((int)Math.max(1, (Math.abs(((electricityStored/getMaxEnergy(itemStack))*100)-100))));
-	}
-
-	@Override
-	public double getMaxEnergy(ItemStack itemStack)
-	{
-		return MAX_ELECTRICITY;
-	}
-
-	@Override
-	public double getMaxTransfer(ItemStack itemStack)
-	{
-		return getMaxEnergy(itemStack)*0.005;
-	}
-
-	@Override
-	public boolean canReceive(ItemStack itemStack)
-	{
-		return getMaxEnergy(itemStack)-getEnergy(itemStack) > 0;
-	}
-
-	@Override
-	public boolean canSend(ItemStack itemStack)
-	{
-		return getEnergy(itemStack) > 0;
-	}
-
-	@Override
-	public int receiveEnergy(ItemStack theItem, int energy, boolean simulate)
-	{
-		if(canReceive(theItem))
-		{
-			double energyNeeded = getMaxEnergy(theItem)-getEnergy(theItem);
-			double toReceive = Math.min(energy*Mekanism.FROM_TE, energyNeeded);
-
-			if(!simulate)
-			{
-				setEnergy(theItem, getEnergy(theItem) + toReceive);
-			}
-
-			return (int)Math.round(toReceive*Mekanism.TO_TE);
-		}
-
-		return 0;
-	}
-
-	@Override
-	public int extractEnergy(ItemStack theItem, int energy, boolean simulate)
-	{
-		if(canSend(theItem))
-		{
-			double energyRemaining = getEnergy(theItem);
-			double toSend = Math.min((energy*Mekanism.FROM_TE), energyRemaining);
-
-			if(!simulate)
-			{
-				setEnergy(theItem, getEnergy(theItem) - toSend);
-			}
-
-			return (int)Math.round(toSend*Mekanism.TO_TE);
-		}
-
-		return 0;
-	}
-
-	@Override
-	public int getEnergyStored(ItemStack theItem)
-	{
-		return (int)Math.round(getEnergy(theItem)*Mekanism.TO_TE);
-	}
-
-	@Override
-	public int getMaxEnergyStored(ItemStack theItem)
-	{
-		return (int)Math.round(getMaxEnergy(theItem)*Mekanism.TO_TE);
-	}
-
-	@Override
-	public boolean isMetadataSpecific(ItemStack itemStack)
-	{
-		return false;
-	}
-
-	@Override
-	@Method(modid = "IC2API")
-	public IElectricItemManager getManager(ItemStack itemStack)
-	{
-		return IC2ItemManager.getManager(this);
-	}
+    @Override
+    public boolean shouldCauseBlockBreakReset(ItemStack oldStack, ItemStack newStack) {
+        //Ignore NBT for energized items causing block break reset
+        return oldStack.getItem() != newStack.getItem();
+    }
 }

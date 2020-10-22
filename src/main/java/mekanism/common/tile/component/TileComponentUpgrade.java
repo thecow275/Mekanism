@@ -1,135 +1,202 @@
 package mekanism.common.tile.component;
 
-import java.util.ArrayList;
-
-import mekanism.common.ITileComponent;
-import mekanism.common.Mekanism;
-import mekanism.common.tile.TileEntityContainerBlock;
-
+import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.Map;
+import java.util.Set;
+import javax.annotation.Nonnull;
+import mekanism.api.Action;
+import mekanism.api.NBTConstants;
+import mekanism.api.Upgrade;
+import mekanism.common.inventory.container.ITrackableContainer;
+import mekanism.common.inventory.container.MekanismContainer;
+import mekanism.common.inventory.container.sync.SyncableInt;
+import mekanism.common.inventory.slot.UpgradeInventorySlot;
+import mekanism.common.item.interfaces.IUpgradeItem;
+import mekanism.common.tile.base.TileEntityMekanism;
+import mekanism.common.util.EnumUtils;
+import mekanism.common.util.MekanismUtils;
+import mekanism.common.util.NBTUtils;
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.CompoundNBT;
+import net.minecraftforge.common.util.Constants.NBT;
 
-import io.netty.buffer.ByteBuf;
+//TODO: Clean this up as a lot of the code can probably be reduced due to the slot knowing some of that information
+public class TileComponentUpgrade implements ITileComponent, ITrackableContainer {
 
-public class TileComponentUpgrade implements ITileComponent
-{
-	/** How long it takes this machine to install an upgrade. */
-	public static int UPGRADE_TICKS_REQUIRED = 40;
+    /**
+     * How long it takes this machine to install an upgrade.
+     */
+    private static final int UPGRADE_TICKS_REQUIRED = 40;
+    /**
+     * How many upgrade ticks have progressed.
+     */
+    private int upgradeTicks;
+    /**
+     * TileEntity implementing this component.
+     */
+    private final TileEntityMekanism tile;
+    private Map<Upgrade, Integer> upgrades = new EnumMap<>(Upgrade.class);
+    private final Set<Upgrade> supported = EnumSet.noneOf(Upgrade.class);
+    /**
+     * The inventory slot the upgrade slot of this component occupies.
+     */
+    private final UpgradeInventorySlot upgradeSlot;
 
-	/** The inventory slot the upgrade slot of this component occupies. */
-	private int upgradeSlot;
+    public TileComponentUpgrade(TileEntityMekanism tile, @Nonnull UpgradeInventorySlot slot) {
+        this.tile = tile;
+        upgradeSlot = slot;
+        slot.getSupportedUpgrade().forEach(this::setSupported);
+        tile.addComponent(this);
+    }
 
-	/** How many upgrade ticks have progressed. */
-	public int upgradeTicks;
+    @Override
+    public void tick() {
+        if (!tile.isRemote()) {
+            ItemStack stack = upgradeSlot.getStack();
+            if (!stack.isEmpty() && stack.getItem() instanceof IUpgradeItem) {
+                Upgrade type = ((IUpgradeItem) stack.getItem()).getUpgradeType(stack);
 
-	/** This machine's speed multiplier. */
-	public int speedMultiplier;
+                if (supports(type) && getUpgrades(type) < type.getMax()) {
+                    if (upgradeTicks < UPGRADE_TICKS_REQUIRED) {
+                        upgradeTicks++;
+                    } else if (upgradeTicks == UPGRADE_TICKS_REQUIRED) {
+                        upgradeTicks = 0;
+                        addUpgrade(type);
+                        MekanismUtils.logMismatchedStackSize(upgradeSlot.shrinkStack(1, Action.EXECUTE), 1);
+                        if (type == Upgrade.MUFFLING) {
+                            //Send an update packet to the client to update the number of muffling upgrades installed
+                            tile.sendUpdatePacket();
+                        }
+                        tile.markDirty(false);
+                    }
+                } else {
+                    upgradeTicks = 0;
+                }
+            } else {
+                upgradeTicks = 0;
+            }
+        }
+    }
 
-	/** This machine's energy multiplier. */
-	public int energyMultiplier;
+    public UpgradeInventorySlot getUpgradeSlot() {
+        return upgradeSlot;
+    }
 
-	/** TileEntity implementing this component. */
-	public TileEntityContainerBlock tileEntity;
+    public double getScaledUpgradeProgress() {
+        return upgradeTicks / (double) UPGRADE_TICKS_REQUIRED;
+    }
 
-	public TileComponentUpgrade(TileEntityContainerBlock tile, int slot)
-	{
-		tileEntity = tile;
-		upgradeSlot = slot;
+    public int getUpgrades(Upgrade upgrade) {
+        return upgrades.getOrDefault(upgrade, 0);
+    }
 
-		tile.components.add(this);
-	}
+    public void addUpgrade(Upgrade upgrade) {
+        upgrades.put(upgrade, Math.min(upgrade.getMax(), getUpgrades(upgrade) + 1));
+        tile.recalculateUpgrades(upgrade);
+    }
 
-	@Override
-	public void tick()
-	{
-		if(!tileEntity.getWorldObj().isRemote)
-		{
-			if(tileEntity.inventory[upgradeSlot] != null)
-			{
-				if(tileEntity.inventory[upgradeSlot].isItemEqual(new ItemStack(Mekanism.EnergyUpgrade)) && energyMultiplier < 8)
-				{
-					if(upgradeTicks < UPGRADE_TICKS_REQUIRED)
-					{
-						upgradeTicks++;
-					}
-					else if(upgradeTicks == UPGRADE_TICKS_REQUIRED)
-					{
-						upgradeTicks = 0;
-						energyMultiplier++;
+    public void removeUpgrade(Upgrade upgrade) {
+        upgrades.put(upgrade, Math.max(0, getUpgrades(upgrade) - 1));
+        if (upgrades.get(upgrade) == 0) {
+            upgrades.remove(upgrade);
+        }
+        tile.recalculateUpgrades(upgrade);
+    }
 
-						tileEntity.inventory[upgradeSlot].stackSize--;
+    public void setSupported(Upgrade upgrade) {
+        setSupported(upgrade, true);
+    }
 
-						if(tileEntity.inventory[upgradeSlot].stackSize == 0)
-						{
-							tileEntity.inventory[upgradeSlot] = null;
-						}
+    public void setSupported(Upgrade upgrade, boolean isSupported) {
+        if (isSupported) {
+            supported.add(upgrade);
+        } else {
+            supported.remove(upgrade);
+        }
+    }
 
-						tileEntity.markDirty();
-					}
-				}
-				else if(tileEntity.inventory[upgradeSlot].isItemEqual(new ItemStack(Mekanism.SpeedUpgrade)) && speedMultiplier < 8)
-				{
-					if(upgradeTicks < UPGRADE_TICKS_REQUIRED)
-					{
-						upgradeTicks++;
-					}
-					else if(upgradeTicks == UPGRADE_TICKS_REQUIRED)
-					{
-						upgradeTicks = 0;
-						speedMultiplier++;
+    public boolean supports(Upgrade upgrade) {
+        return supported.contains(upgrade);
+    }
 
-						tileEntity.inventory[upgradeSlot].stackSize--;
+    public boolean isUpgradeInstalled(Upgrade upgrade) {
+        return upgrades.containsKey(upgrade);
+    }
 
-						if(tileEntity.inventory[upgradeSlot].stackSize == 0)
-						{
-							tileEntity.inventory[upgradeSlot] = null;
-						}
+    public Set<Upgrade> getInstalledTypes() {
+        return upgrades.keySet();
+    }
 
-						tileEntity.markDirty();
-					}
-				}
-				else {
-					upgradeTicks = 0;
-				}
-			}
-			else {
-				upgradeTicks = 0;
-			}
-		}
-	}
+    public Set<Upgrade> getSupportedTypes() {
+        return supported;
+    }
 
-	public int getScaledUpgradeProgress(int i)
-	{
-		return upgradeTicks*i / UPGRADE_TICKS_REQUIRED;
-	}
+    @Override
+    public void read(CompoundNBT nbtTags) {
+        if (nbtTags.contains(NBTConstants.COMPONENT_UPGRADE, NBT.TAG_COMPOUND)) {
+            CompoundNBT upgradeNBT = nbtTags.getCompound(NBTConstants.COMPONENT_UPGRADE);
+            upgrades = Upgrade.buildMap(upgradeNBT);
+            for (Upgrade upgrade : getSupportedTypes()) {
+                tile.recalculateUpgrades(upgrade);
+            }
+            //Load the inventory
+            NBTUtils.setCompoundIfPresent(upgradeNBT, NBTConstants.SLOT, upgradeSlot::deserializeNBT);
+        }
+    }
 
-	@Override
-	public void read(NBTTagCompound nbtTags)
-	{
-		speedMultiplier = nbtTags.getInteger("speedMultiplier");
-		energyMultiplier = nbtTags.getInteger("energyMultiplier");
-	}
+    @Override
+    public void write(CompoundNBT nbtTags) {
+        CompoundNBT upgradeNBT = new CompoundNBT();
+        Upgrade.saveMap(upgrades, upgradeNBT);
+        //Save the inventory
+        CompoundNBT compoundNBT = upgradeSlot.serializeNBT();
+        if (!compoundNBT.isEmpty()) {
+            upgradeNBT.put(NBTConstants.SLOT, compoundNBT);
+        }
+        nbtTags.put(NBTConstants.COMPONENT_UPGRADE, upgradeNBT);
+    }
 
-	@Override
-	public void read(ByteBuf dataStream)
-	{
-		speedMultiplier = dataStream.readInt();
-		energyMultiplier = dataStream.readInt();
-		upgradeTicks = dataStream.readInt();
-	}
+    @Override
+    public void trackForMainContainer(MekanismContainer container) {
+    }
 
-	@Override
-	public void write(NBTTagCompound nbtTags)
-	{
-		nbtTags.setInteger("speedMultiplier", speedMultiplier);
-		nbtTags.setInteger("energyMultiplier", energyMultiplier);
-	}
+    @Override
+    public void addToUpdateTag(CompoundNBT updateTag) {
+        //Note: We only bother to sync how many muffling upgrades we have installed as that is the only thing the client cares about
+        if (supports(Upgrade.MUFFLING)) {
+            updateTag.putInt(NBTConstants.MUFFLING_COUNT, upgrades.getOrDefault(Upgrade.MUFFLING, 0));
+        }
+    }
 
-	@Override
-	public void write(ArrayList data)
-	{
-		data.add(speedMultiplier);
-		data.add(energyMultiplier);
-		data.add(upgradeTicks);
-	}
+    @Override
+    public void readFromUpdateTag(CompoundNBT updateTag) {
+        if (supports(Upgrade.MUFFLING)) {
+            NBTUtils.setIntIfPresent(updateTag, NBTConstants.MUFFLING_COUNT, amount -> {
+                if (amount == 0) {
+                    upgrades.remove(Upgrade.MUFFLING);
+                } else {
+                    upgrades.put(Upgrade.MUFFLING, amount);
+                }
+            });
+        }
+    }
+
+    @Override
+    public void addContainerTrackers(MekanismContainer container) {
+        container.track(SyncableInt.create(() -> upgradeTicks, value -> upgradeTicks = value));
+        //We want to make sure the client and server have the upgrades in the same order
+        // so we just do it based on their ordinal
+        for (Upgrade upgrade : EnumUtils.UPGRADES) {
+            if (supports(upgrade)) {
+                container.track(SyncableInt.create(() -> upgrades.getOrDefault(upgrade, 0), value -> {
+                    if (value == 0) {
+                        upgrades.remove(upgrade);
+                    } else if (value > 0) {
+                        upgrades.put(upgrade, value);
+                    }
+                }));
+            }
+        }
+    }
 }

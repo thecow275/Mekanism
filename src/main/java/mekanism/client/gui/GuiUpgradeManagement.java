@@ -1,103 +1,110 @@
 package mekanism.client.gui;
 
-import mekanism.api.Coord4D;
-import mekanism.client.sound.SoundHandler;
-import mekanism.common.IUpgradeTile;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import java.util.Set;
+import javax.annotation.Nonnull;
+import mekanism.api.Upgrade;
+import mekanism.api.text.TextComponentUtil;
+import mekanism.client.gui.element.GuiElementHolder;
+import mekanism.client.gui.element.GuiInnerScreen;
+import mekanism.client.gui.element.button.MekanismButton;
+import mekanism.client.gui.element.button.MekanismImageButton;
+import mekanism.client.gui.element.progress.GuiProgress;
+import mekanism.client.gui.element.progress.ProgressType;
+import mekanism.client.gui.element.scroll.GuiUpgradeScrollList;
 import mekanism.common.Mekanism;
-import mekanism.common.network.PacketRemoveUpgrade.RemoveUpgradeMessage;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
+import mekanism.common.MekanismLang;
+import mekanism.common.inventory.container.tile.MekanismTileContainer;
+import mekanism.common.network.PacketGuiButtonPress;
+import mekanism.common.network.PacketGuiButtonPress.ClickedTileButton;
+import mekanism.common.network.PacketGuiInteract;
+import mekanism.common.network.PacketGuiInteract.GuiInteraction;
+import mekanism.common.tile.base.TileEntityMekanism;
+import mekanism.common.util.UpgradeUtils;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.util.text.ITextComponent;
 
-import net.minecraft.tileentity.TileEntity;
-import net.minecraft.util.ResourceLocation;
+public class GuiUpgradeManagement extends GuiMekanismTile<TileEntityMekanism, MekanismTileContainer<TileEntityMekanism>> {
 
-import codechicken.lib.vec.Rectangle4i;
+    private MekanismButton removeButton;
+    private GuiUpgradeScrollList scrollList;
+    private int supportedIndex;
+    private int delay;
 
-public class GuiUpgradeManagement extends GuiElement
-{
-	TileEntity tileEntity;
+    public GuiUpgradeManagement(MekanismTileContainer<TileEntityMekanism> container, PlayerInventory inv, ITextComponent title) {
+        super(container, inv, title);
+        dynamicSlots = true;
+    }
 
-	public GuiUpgradeManagement(IGuiWrapper gui, TileEntity tile, ResourceLocation def)
-	{
-		super(MekanismUtils.getResource(ResourceType.GUI_ELEMENT, "GuiUpgradeManagement.png"), gui, def);
+    @Override
+    public void init() {
+        super.init();
+        addButton(scrollList = new GuiUpgradeScrollList(this, 24, 6, 66, 50, tile.getComponent()));
+        addButton(new GuiElementHolder(this, 24, 56, 125, 14));
+        addButton(new GuiInnerScreen(this, 90, 6, 59, 50));
+        addButton(new GuiProgress(() -> tile.getComponent().getScaledUpgradeProgress(), ProgressType.INSTALLING, this, 154, 26));
+        addButton(new MekanismImageButton(this, getGuiLeft() + 6, getGuiTop() + 6, 14, getButtonLocation("back"),
+              () -> Mekanism.packetHandler.sendToServer(new PacketGuiButtonPress(ClickedTileButton.BACK_BUTTON, tile))));
+        addButton(removeButton = new MekanismImageButton(this, getGuiLeft() + 136, getGuiTop() + 57, 12, getButtonLocation("remove_upgrade"), () -> {
+            if (scrollList.hasSelection()) {
+                Mekanism.packetHandler.sendToServer(new PacketGuiInteract(GuiInteraction.REMOVE_UPGRADE, tile, scrollList.getSelection().ordinal()));
+            }
+        }));
+        updateEnabledButtons();
+    }
 
-		tileEntity = tile;
-	}
-	
-	@Override
-	public Rectangle4i getBounds(int guiWidth, int guiHeight)
-	{
-		return new Rectangle4i(guiWidth + 176, guiHeight + 6, 26, 63);
-	}
+    @Override
+    public void tick() {
+        super.tick();
+        if (delay < 40) {
+            delay++;
+        } else {
+            delay = 0;
+            supportedIndex = ++supportedIndex % tile.getComponent().getSupportedTypes().size();
+        }
+        updateEnabledButtons();
+    }
 
-	@Override
-	public void renderBackground(int xAxis, int yAxis, int guiWidth, int guiHeight)
-	{
-		mc.renderEngine.bindTexture(RESOURCE);
+    private void updateEnabledButtons() {
+        removeButton.active = scrollList.hasSelection();
+    }
 
-		guiObj.drawTexturedRect(guiWidth + 176, guiHeight + 6, 0, 0, 26, 63);
+    @Override
+    protected void drawForegroundText(@Nonnull MatrixStack matrix, int mouseX, int mouseY) {
+        drawString(matrix, MekanismLang.INVENTORY.translate(), 8, (getYSize() - 96) + 2, titleTextColor());
+        drawString(matrix, MekanismLang.UPGRADES_SUPPORTED.translate(), 26, 59, titleTextColor());
+        if (scrollList.hasSelection()) {
+            Upgrade selectedType = scrollList.getSelection();
+            int amount = tile.getComponent().getUpgrades(selectedType);
+            renderText(matrix, MekanismLang.UPGRADE_TYPE.translate(selectedType), 92, 8, 0.6F);
+            renderText(matrix, MekanismLang.UPGRADE_COUNT.translate(amount, selectedType.getMax()), 92, 16, 0.6F);
+            int text = 0;
+            for (ITextComponent component : UpgradeUtils.getInfo(tile, selectedType)) {
+                renderText(matrix, component, 92, 22 + (6 * text++), 0.6F);
+            }
+        } else {
+            renderText(matrix, MekanismLang.UPGRADE_NO_SELECTION.translate(), 92, 8, 0.8F);
+        }
+        //TODO: Move this into a gui element
+        Set<Upgrade> supportedTypes = tile.getComponent().getSupportedTypes();
+        if (!supportedTypes.isEmpty()) {
+            Upgrade[] supported = supportedTypes.toArray(new Upgrade[0]);
+            if (supported.length > supportedIndex) {
+                renderUpgrade(matrix, supported[supportedIndex], 80, 57, 0.8F);
+                drawString(matrix, TextComponentUtil.build(supported[supportedIndex]), 96, 59, titleTextColor());
+            }
+        }
+        super.drawForegroundText(matrix, mouseX, mouseY);
+    }
 
-		IUpgradeTile upgradeTile = (IUpgradeTile)tileEntity;
-		int displayInt = upgradeTile.getComponent().getScaledUpgradeProgress(14);
+    private void renderText(MatrixStack matrix, ITextComponent component, int x, int y, float size) {
+        matrix.push();
+        matrix.scale(size, size, size);
+        drawString(matrix, component, (int) ((1F / size) * x), (int) ((1F / size) * y), screenTextColor());
+        matrix.pop();
+    }
 
-		guiObj.drawTexturedRect(guiWidth + 180, guiHeight + 30, 26, 0, 10, displayInt);
-
-		mc.renderEngine.bindTexture(defaultLocation);
-	}
-
-	@Override
-	public void renderForeground(int xAxis, int yAxis)
-	{
-		mc.renderEngine.bindTexture(RESOURCE);
-
-		IUpgradeTile upgradeTile = (IUpgradeTile)tileEntity;
-
-		if(getFontRenderer() != null)
-		{
-			getFontRenderer().drawString("S:" + (upgradeTile.getSpeedMultiplier()+1) + "x", 179, 47, 0x404040);
-			getFontRenderer().drawString("E:" + (upgradeTile.getEnergyMultiplier()+1) + "x", 179, 57, 0x404040);
-		}
-
-		if(xAxis >= 179 && xAxis <= 198 && yAxis >= 47 && yAxis <= 54)
-		{
-			displayTooltip(MekanismUtils.localize("gui.removeSpeedUpgrade"), xAxis, yAxis);
-		}
-
-		if(xAxis >= 179 && xAxis <= 198 && yAxis >= 57 && yAxis <= 64)
-		{
-			displayTooltip(MekanismUtils.localize("gui.removeEnergyUpgrade"), xAxis, yAxis);
-		}
-
-		mc.renderEngine.bindTexture(defaultLocation);
-	}
-
-	@Override
-	public void preMouseClicked(int xAxis, int yAxis, int button)
-	{
-		if(xAxis >= 180 && xAxis <= 196 && yAxis >= 11 && yAxis <= 27)
-		{
-			offsetX(26);
-		}
-	}
-
-	@Override
-	public void mouseClicked(int xAxis, int yAxis, int button)
-	{
-		if(xAxis >= 179 && xAxis <= 198 && yAxis >= 47 && yAxis <= 54)
-		{
-            SoundHandler.playSound("gui.button.press");
-			Mekanism.packetHandler.sendToServer(new RemoveUpgradeMessage(Coord4D.get(tileEntity), (byte)0));
-		}
-
-		if(xAxis >= 179 && xAxis <= 198 && yAxis >= 57 && yAxis <= 64)
-		{
-            SoundHandler.playSound("gui.button.press");
-			Mekanism.packetHandler.sendToServer(new RemoveUpgradeMessage(Coord4D.get(tileEntity), (byte)1));
-		}
-
-		if(xAxis >= 180 && xAxis <= 196 && yAxis >= 11 && yAxis <= 27)
-		{
-			offsetX(-26);
-		}
-	}
+    private void renderUpgrade(MatrixStack matrix, Upgrade type, int x, int y, float size) {
+        renderItem(matrix, UpgradeUtils.getStack(type), (int) (x / size), (int) (y / size), size);
+    }
 }

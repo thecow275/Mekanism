@@ -1,108 +1,123 @@
 package mekanism.client;
 
-import java.util.EnumSet;
-
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.List;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
-import cpw.mods.fml.common.gameevent.TickEvent.Type;
+import net.minecraft.client.util.InputMappings;
+import net.minecraftforge.client.settings.KeyModifier;
+import org.lwjgl.glfw.GLFW;
 
-import org.lwjgl.input.Keyboard;
-import org.lwjgl.input.Mouse;
+public abstract class MekKeyHandler {
 
-public abstract class MekKeyHandler
-{
-	public KeyBinding[] keyBindings;
-	public boolean[] keyDown;
-	public boolean[] repeatings;
-	public boolean isDummy;
+    /**
+     * KeyBinding instances
+     */
+    private final KeyBinding[] keyBindings;
 
-	/**
-	 * Pass an array of keybindings and a repeat flag for each one
-	 *
-	 * @param keyBindings
-	 * @param repeatings
-	 */
-	public MekKeyHandler(KeyBinding[] bindings, boolean[] rep)
-	{
-		assert keyBindings.length == repeatings.length : "You need to pass two arrays of identical length";
-		keyBindings = bindings;
-		repeatings = rep;
-		keyDown = new boolean[keyBindings.length];
-	}
+    /**
+     * Track which keys have been seen as pressed currently
+     */
+    private final BitSet keyDown;
 
-	/**
-	 * Register the keys into the system. You will do your own keyboard
-	 * management elsewhere. No events will fire if you use this method
-	 *
-	 * @param keyBindings
-	 */
-	public MekKeyHandler(KeyBinding[] bindings)
-	{
-		keyBindings = bindings;
-		isDummy = true;
-	}
+    /**
+     * Whether keys send repeated KeyDown pseudo-messages
+     */
+    private final BitSet repeatings;
 
-	public static boolean getIsKeyPressed(KeyBinding keyBinding)
-	{
-		int keyCode = keyBinding.getKeyCode();
-		return keyCode < 0 ? Mouse.isButtonDown(keyCode + 100) : Keyboard.isKeyDown(keyCode);
-	}
+    /**
+     * Pass an array of keybindings and a repeat flag for each one
+     *
+     * @param bindings Bindings to set
+     */
+    public MekKeyHandler(Builder bindings) {
+        keyBindings = bindings.getBindings();
+        repeatings = bindings.getRepeatFlags();
+        keyDown = new BitSet();
+    }
 
-	public KeyBinding[] getKeyBindings ()
-	{
-		return keyBindings;
-	}
+    public static boolean getIsKeyPressed(KeyBinding keyBinding) {
+        if (keyBinding.isKeyDown()) {
+            return true;
+        }
+        if (keyBinding.getKeyConflictContext().isActive() && keyBinding.getKeyModifier().isActive(keyBinding.getKeyConflictContext())) {
+            //Manually check in case keyBinding#pressed just never got a chance to be updated
+            return isKeyPressed(keyBinding);
+        }
+        //If we failed, due to us being a key modifier as our key, check the old way
+        return KeyModifier.isKeyCodeModifier(keyBinding.getKey()) && isKeyPressed(keyBinding);
+    }
 
-	public void keyTick(Type type, boolean tickEnd)
-	{
-		for(int i = 0; i < keyBindings.length; i++)
-		{
-			KeyBinding keyBinding = keyBindings[i];
-			int keyCode = keyBinding.getKeyCode();
-			boolean state = (keyCode < 0 ? Mouse.isButtonDown(keyCode + 100) : Keyboard.isKeyDown(keyCode));
-			
-			if(state != keyDown[i] || (state && repeatings[i]))
-			{
-				if(state)
-				{
-					keyDown(type, keyBinding, tickEnd, state != keyDown[i]);
-				}
-				else {
-					keyUp(type, keyBinding, tickEnd);
-				}
-				
-				if(tickEnd)
-				{
-					keyDown[i] = state;
-				}
-			}
-		}
-	}
+    public static boolean isKeyDown(KeyBinding keyBinding) {
+        int keyCode = keyBinding.getKey().getKeyCode();
+        return keyCode != InputMappings.INPUT_INVALID.getKeyCode() && InputMappings.isKeyDown(Minecraft.getInstance().getMainWindow().getHandle(), keyCode);
+    }
 
-	/**
-	 * Called when the key is first in the down position on any tick from the
-	 * {@link #ticks()} set. Will be called subsequently with isRepeat set to
-	 * true
-	 *
-	 * @see #keyUp(EnumSet, KeyBinding, boolean)
-	 *
-	 * @param types
-	 * the type(s) of tick that fired when this key was first down
-	 * @param tickEnd
-	 * was it an end or start tick which fired the key
-	 * @param isRepeat
-	 * is it a repeat key event
-	 */
-	public abstract void keyDown(Type types, KeyBinding kb, boolean tickEnd, boolean isRepeat);
+    private static boolean isKeyPressed(KeyBinding keyBinding) {
+        InputMappings.Input key = keyBinding.getKey();
+        int keyCode = key.getKeyCode();
+        if (keyCode != InputMappings.INPUT_INVALID.getKeyCode()) {
+            long windowHandle = Minecraft.getInstance().getMainWindow().getHandle();
+            try {
+                if (key.getType() == InputMappings.Type.KEYSYM) {
+                    return InputMappings.isKeyDown(windowHandle, keyCode);
+                } else if (key.getType() == InputMappings.Type.MOUSE) {
+                    return GLFW.glfwGetMouseButton(windowHandle, keyCode) == GLFW.GLFW_PRESS;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return false;
+    }
 
-	/**
-	 * Fired once when the key changes state from down to up
-	 *
-	 * @see #keyDown(EnumSet, KeyBinding, boolean, boolean)
-	 *
-	 * @param types
-	 * the type(s) of tick that fired when this key was first down
-	 * @param tickEnd
-	 * was it an end or start tick which fired the key
-	 */
-	public abstract void keyUp(Type types, KeyBinding kb, boolean tickEnd);
+    public void keyTick() {
+        for (int i = 0; i < keyBindings.length; i++) {
+            KeyBinding keyBinding = keyBindings[i];
+            boolean state = keyBinding.isKeyDown();
+            boolean lastState = keyDown.get(i);
+            if (state != lastState || (state && repeatings.get(i))) {
+                if (state) {
+                    keyDown(keyBinding, lastState);
+                } else {
+                    keyUp(keyBinding);
+                }
+                keyDown.set(i, state);
+            }
+        }
+    }
+
+    public abstract void keyDown(KeyBinding kb, boolean isRepeat);
+
+    public abstract void keyUp(KeyBinding kb);
+
+    public static class Builder {
+
+        private final List<KeyBinding> bindings;
+        private final BitSet repeatFlags = new BitSet();
+
+        public Builder(int expectedCapacity) {
+            this.bindings = new ArrayList<>(expectedCapacity);
+        }
+
+        /**
+         * Add a keybinding to the list
+         *
+         * @param k          the KeyBinding to add
+         * @param repeatFlag true if keyDown pseudo-events continue to be sent while key is held
+         */
+        public Builder addBinding(KeyBinding k, boolean repeatFlag) {
+            repeatFlags.set(bindings.size(), repeatFlag);
+            bindings.add(k);
+            return this;
+        }
+
+        protected BitSet getRepeatFlags() {
+            return repeatFlags;
+        }
+
+        protected KeyBinding[] getBindings() {
+            return bindings.toArray(new KeyBinding[0]);
+        }
+    }
 }

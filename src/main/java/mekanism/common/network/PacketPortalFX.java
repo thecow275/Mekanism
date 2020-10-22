@@ -1,60 +1,44 @@
 package mekanism.common.network;
 
-import java.util.Random;
+import java.util.function.Supplier;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.network.PacketBuffer;
+import net.minecraft.particles.ParticleTypes;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.World;
+import net.minecraftforge.fml.network.NetworkEvent.Context;
 
-import mekanism.api.Coord4D;
-import mekanism.common.PacketHandler;
-import mekanism.common.network.PacketPortalFX.PortalFXMessage;
+public class PacketPortalFX {
 
-import net.minecraft.entity.player.EntityPlayer;
-import cpw.mods.fml.common.network.simpleimpl.IMessage;
-import cpw.mods.fml.common.network.simpleimpl.IMessageHandler;
-import cpw.mods.fml.common.network.simpleimpl.MessageContext;
+    private final BlockPos pos;
 
-import io.netty.buffer.ByteBuf;
+    public PacketPortalFX(BlockPos pos) {
+        this.pos = pos;
+    }
 
-public class PacketPortalFX implements IMessageHandler<PortalFXMessage, IMessage>
-{
-	@Override
-	public IMessage onMessage(PortalFXMessage message, MessageContext context) 
-	{
-		EntityPlayer player = PacketHandler.getPlayer(context);
-		
-		Random random = new Random();
+    public static void handle(PacketPortalFX message, Supplier<Context> context) {
+        PlayerEntity player = BasePacketHandler.getPlayer(context);
+        if (player == null) {
+            return;
+        }
+        context.get().enqueueWork(() -> {
+            World world = player.world;
+            BlockPos pos = message.pos;
+            for (int i = 0; i < 50; i++) {
+                world.addParticle(ParticleTypes.PORTAL, pos.getX() + world.rand.nextFloat(), pos.getY() + world.rand.nextFloat(),
+                      pos.getZ() + world.rand.nextFloat(), 0.0F, 0.0F, 0.0F);
+                world.addParticle(ParticleTypes.PORTAL, pos.getX() + world.rand.nextFloat(), pos.getY() + 1 + world.rand.nextFloat(),
+                      pos.getZ() + world.rand.nextFloat(), 0.0F, 0.0F, 0.0F);
+            }
+        });
+        context.get().setPacketHandled(true);
+    }
 
-		for(int i = 0; i < 50; i++)
-		{
-			player.worldObj.spawnParticle("portal", message.coord4D.xCoord + random.nextFloat(), message.coord4D.yCoord + random.nextFloat(), message.coord4D.zCoord + random.nextFloat(), 0.0F, 0.0F, 0.0F);
-			player.worldObj.spawnParticle("portal", message.coord4D.xCoord + random.nextFloat(), message.coord4D.yCoord + 1 + random.nextFloat(), message.coord4D.zCoord + random.nextFloat(), 0.0F, 0.0F, 0.0F);
-		}
-		
-		return null;
-	}
-	
-	public static class PortalFXMessage implements IMessage
-	{
-		public Coord4D coord4D;
-	
-		public PortalFXMessage() {}
-		
-		public PortalFXMessage(Coord4D coord)
-		{
-			coord4D = coord;
-		}
-	
-		@Override
-		public void toBytes(ByteBuf dataStream)
-		{
-			dataStream.writeInt(coord4D.xCoord);
-			dataStream.writeInt(coord4D.yCoord);
-			dataStream.writeInt(coord4D.zCoord);
-			dataStream.writeInt(coord4D.dimensionId);
-		}
-	
-		@Override
-		public void fromBytes(ByteBuf dataStream)
-		{
-			coord4D = new Coord4D(dataStream.readInt(), dataStream.readInt(), dataStream.readInt(), dataStream.readInt());
-		}
-	}
+    public static void encode(PacketPortalFX pkt, PacketBuffer buf) {
+        buf.writeBlockPos(pkt.pos);
+    }
+
+    public static PacketPortalFX decode(PacketBuffer buf) {
+        return new PacketPortalFX(buf.readBlockPos());
+    }
 }

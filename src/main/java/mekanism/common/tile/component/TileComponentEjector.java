@@ -1,321 +1,244 @@
 package mekanism.common.tile.component;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
-
-import mekanism.api.Coord4D;
-import mekanism.api.EnumColor;
-import mekanism.common.IEjector;
-import mekanism.common.IInvConfiguration;
-import mekanism.common.ILogisticalTransporter;
-import mekanism.common.ITileComponent;
-import mekanism.common.SideData;
-import mekanism.common.tile.TileEntityContainerBlock;
-import mekanism.common.transporter.TransporterManager;
-import mekanism.common.util.InventoryUtils;
+import java.util.Map;
+import java.util.Set;
+import mekanism.api.Action;
+import mekanism.api.NBTConstants;
+import mekanism.api.RelativeSide;
+import mekanism.api.inventory.AutomationType;
+import mekanism.api.inventory.IInventorySlot;
+import mekanism.api.text.EnumColor;
+import mekanism.common.config.MekanismConfig;
+import mekanism.common.inventory.container.MekanismContainer;
+import mekanism.common.inventory.container.MekanismContainer.ISpecificContainerTracker;
+import mekanism.common.inventory.container.sync.ISyncableData;
+import mekanism.common.inventory.container.sync.SyncableBoolean;
+import mekanism.common.inventory.container.sync.SyncableInt;
+import mekanism.common.lib.inventory.TileTransitRequest;
+import mekanism.common.lib.inventory.TransitRequest;
+import mekanism.common.lib.inventory.TransitRequest.TransitResponse;
+import mekanism.common.lib.transmitter.TransmissionType;
+import mekanism.common.tile.base.TileEntityMekanism;
+import mekanism.common.tile.component.config.ConfigInfo;
+import mekanism.common.tile.component.config.DataType;
+import mekanism.common.tile.component.config.slot.ChemicalSlotInfo;
+import mekanism.common.tile.component.config.slot.FluidSlotInfo;
+import mekanism.common.tile.component.config.slot.ISlotInfo;
+import mekanism.common.tile.component.config.slot.InventorySlotInfo;
+import mekanism.common.tile.transmitter.TileEntityLogisticalTransporterBase;
+import mekanism.common.util.ChemicalUtil;
+import mekanism.common.util.EnumUtils;
+import mekanism.common.util.FluidUtils;
 import mekanism.common.util.MekanismUtils;
+import mekanism.common.util.NBTUtils;
 import mekanism.common.util.TransporterUtils;
-
-import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.CompoundNBT;
 import net.minecraft.tileentity.TileEntity;
-import net.minecraftforge.common.util.ForgeDirection;
+import net.minecraft.util.Direction;
+import net.minecraftforge.common.util.Constants.NBT;
 
-import io.netty.buffer.ByteBuf;
+public class TileComponentEjector implements ITileComponent, ISpecificContainerTracker {
 
-public class TileComponentEjector implements ITileComponent, IEjector
-{
-	public TileEntityContainerBlock tileEntity;
+    private final TileEntityMekanism tile;
+    private final Map<TransmissionType, ConfigInfo> configInfo = new EnumMap<>(TransmissionType.class);
+    private final EnumColor[] inputColors = new EnumColor[]{null, null, null, null, null, null};
+    private boolean strictInput;
+    private EnumColor outputColor;
+    private int tickDelay = 0;
 
-	public boolean strictInput;
+    public TileComponentEjector(TileEntityMekanism tile) {
+        this.tile = tile;
+        tile.addComponent(this);
+    }
 
-	public boolean ejecting;
+    public TileComponentEjector setOutputData(TileComponentConfig config, TransmissionType... types) {
+        for (TransmissionType type : types) {
+            ConfigInfo info = config.getConfig(type);
+            if (info != null) {
+                configInfo.put(type, info);
+            }
+        }
+        return this;
+    }
 
-	public EnumColor outputColor;
+    @Override
+    public void tick() {
+        if (!tile.isRemote()) {
+            if (tickDelay == 0) {
+                outputItems();
+            } else {
+                tickDelay--;
+            }
+            eject(TransmissionType.GAS);
+            eject(TransmissionType.INFUSION);
+            eject(TransmissionType.SLURRY);
+            eject(TransmissionType.PIGMENT);
+            eject(TransmissionType.FLUID);
+        }
+    }
 
-	public EnumColor[] inputColors = new EnumColor[] {null, null, null, null, null, null};
+    private void eject(TransmissionType type) {
+        ConfigInfo info = configInfo.get(type);
+        if (info != null && info.isEjecting()) {
+            for (DataType dataType : info.getSupportedDataTypes()) {
+                if (dataType.canOutput()) {
+                    ISlotInfo slotInfo = info.getSlotInfo(dataType);
+                    if (slotInfo != null) {
+                        Set<Direction> outputSides = info.getSidesForData(dataType);
+                        if (type.isChemical() && slotInfo instanceof ChemicalSlotInfo) {
+                            ((ChemicalSlotInfo<?, ?, ?>) slotInfo).getTanks().forEach(tank -> ChemicalUtil.emit(outputSides, tank, tile, MekanismConfig.general.chemicalAutoEjectRate.get()));
+                        } else if (type == TransmissionType.FLUID && slotInfo instanceof FluidSlotInfo) {
+                            ((FluidSlotInfo) slotInfo).getTanks().forEach(tank -> FluidUtils.emit(outputSides, tank, tile, MekanismConfig.general.fluidAutoEjectRate.get()));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-	public int tickDelay = 0;
+    private void outputItems() {
+        ConfigInfo info = configInfo.get(TransmissionType.ITEM);
+        if (info == null || !info.isEjecting()) {
+            return;
+        }
+        for (DataType dataType : info.getSupportedDataTypes()) {
+            if (!dataType.canOutput()) {
+                continue;
+            }
+            ISlotInfo slotInfo = info.getSlotInfo(dataType);
+            if (!(slotInfo instanceof InventorySlotInfo)) {
+                //We need it to be inventory slot info
+                return;
+            }
+            Set<Direction> outputs = info.getSidesForData(dataType);
+            if (!outputs.isEmpty()) {
+                TransitRequest ejectMap = getEjectItemMap((InventorySlotInfo) slotInfo, outputs.iterator().next());
+                if (!ejectMap.isEmpty()) {
+                    for (Direction side : outputs) {
+                        TileEntity tile = MekanismUtils.getTileEntity(this.tile.getWorld(), this.tile.getPos().offset(side));
+                        if (tile == null) {
+                            //If the spot is not loaded just skip trying to eject to it
+                            continue;
+                        }
+                        TransitResponse response;
+                        if (tile instanceof TileEntityLogisticalTransporterBase) {
+                            response = ((TileEntityLogisticalTransporterBase) tile).getTransmitter().insert(this.tile, ejectMap, outputColor, true, 0);
+                        } else {
+                            response = ejectMap.addToInventory(tile, side, false);
+                        }
+                        if (!response.isEmpty()) {
+                            // use the items returned by the TransitResponse; will be visible next loop
+                            response.useAll();
+                            if (ejectMap.isEmpty()) {
+                                //If we are out of items to eject, break
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-	public SideData sideData;
+        tickDelay = 10;
+    }
 
-	public int[] trackers;
+    private TransitRequest getEjectItemMap(InventorySlotInfo slotInfo, Direction side) {
+        TileTransitRequest request = new TileTransitRequest(tile, side);
+        List<IInventorySlot> slots = slotInfo.getSlots();
+        // shuffle the order we look at our slots to avoid ejection patterns
+        List<IInventorySlot> shuffled = new ArrayList<>(slots);
+        Collections.shuffle(shuffled);
+        for (IInventorySlot slot : shuffled) {
+            //Note: We are using EXTERNAL as that is what we actually end up using when performing the extraction in the end
+            ItemStack simulatedExtraction = slot.extractItem(slot.getCount(), Action.SIMULATE, AutomationType.EXTERNAL);
+            if (!simulatedExtraction.isEmpty()) {
+                request.addItem(simulatedExtraction, slots.indexOf(slot));
+            }
+        }
+        return request;
+    }
 
-	public TileComponentEjector(TileEntityContainerBlock tile, SideData data)
-	{
-		tileEntity = tile;
-		sideData = data;
-		trackers = new int[sideData.availableSlots.length];
+    public boolean hasStrictInput() {
+        return strictInput;
+    }
 
-		tile.components.add(this);
-	}
+    public void setStrictInput(boolean strict) {
+        strictInput = strict;
+        MekanismUtils.saveChunk(tile);
+    }
 
-	private List<ForgeDirection> getTrackedOutputs(int index, List<ForgeDirection> dirs)
-	{
-		List<ForgeDirection> sides = new ArrayList<ForgeDirection>();
+    public EnumColor getOutputColor() {
+        return outputColor;
+    }
 
-		for(int i = trackers[index]+1; i <= trackers[index]+6; i++)
-		{
-			for(ForgeDirection side : dirs)
-			{
-				if(ForgeDirection.getOrientation(i%6) == side)
-				{
-					sides.add(side);
-				}
-			}
-		}
+    public void setOutputColor(EnumColor color) {
+        outputColor = color;
+        MekanismUtils.saveChunk(tile);
+    }
 
-		return sides;
-	}
+    public void setInputColor(RelativeSide side, EnumColor color) {
+        inputColors[side.ordinal()] = color;
+        MekanismUtils.saveChunk(tile);
+    }
 
-	@Override
-	public void tick()
-	{
-		if(tickDelay == 0)
-		{
-			onOutput();
-		}
-		else {
-			tickDelay--;
-		}
-	}
+    public EnumColor getInputColor(RelativeSide side) {
+        return inputColors[side.ordinal()];
+    }
 
-	@Override
-	public void onOutput()
-	{
-		if(!ejecting || tileEntity.getWorldObj().isRemote)
-		{
-			return;
-		}
+    @Override
+    public void read(CompoundNBT nbtTags) {
+        if (nbtTags.contains(NBTConstants.COMPONENT_EJECTOR, NBT.TAG_COMPOUND)) {
+            CompoundNBT ejectorNBT = nbtTags.getCompound(NBTConstants.COMPONENT_EJECTOR);
+            strictInput = ejectorNBT.getBoolean(NBTConstants.STRICT_INPUT);
+            NBTUtils.setEnumIfPresent(ejectorNBT, NBTConstants.COLOR, TransporterUtils::readColor, color -> outputColor = color);
+            //Input colors
+            for (int i = 0; i < EnumUtils.DIRECTIONS.length; i++) {
+                int index = i;
+                NBTUtils.setEnumIfPresent(ejectorNBT, NBTConstants.COLOR + index, TransporterUtils::readColor, color -> inputColors[index] = color);
+            }
+        }
+    }
 
-		List<ForgeDirection> outputSides = new ArrayList<ForgeDirection>();
+    @Override
+    public void write(CompoundNBT nbtTags) {
+        CompoundNBT ejectorNBT = new CompoundNBT();
+        ejectorNBT.putBoolean(NBTConstants.STRICT_INPUT, strictInput);
+        if (outputColor != null) {
+            ejectorNBT.putInt(NBTConstants.COLOR, TransporterUtils.getColorIndex(outputColor));
+        }
+        //Input colors
+        for (int i = 0; i < EnumUtils.DIRECTIONS.length; i++) {
+            ejectorNBT.putInt(NBTConstants.COLOR + i, TransporterUtils.getColorIndex(inputColors[i]));
+        }
+        nbtTags.put(NBTConstants.COMPONENT_EJECTOR, ejectorNBT);
+    }
 
-		IInvConfiguration configurable = (IInvConfiguration)tileEntity;
+    @Override
+    public void trackForMainContainer(MekanismContainer container) {
+    }
 
-		for(int i = 0; i < configurable.getConfiguration().length; i++)
-		{
-			if(configurable.getConfiguration()[i] == configurable.getSideData().indexOf(sideData))
-			{
-				outputSides.add(ForgeDirection.getOrientation(MekanismUtils.getBaseOrientation(i, tileEntity.facing)));
-			}
-		}
+    @Override
+    public void addToUpdateTag(CompoundNBT updateTag) {
+    }
 
-		for(int index = 0; index < sideData.availableSlots.length; index++)
-		{
-			int slotID = sideData.availableSlots[index];
+    @Override
+    public void readFromUpdateTag(CompoundNBT updateTag) {
+    }
 
-			if(tileEntity.inventory[slotID] == null)
-			{
-				continue;
-			}
-
-			ItemStack stack = tileEntity.inventory[slotID];
-			List<ForgeDirection> outputs = getTrackedOutputs(index, outputSides);
-
-			for(ForgeDirection side : outputs)
-			{
-				TileEntity tile = Coord4D.get(tileEntity).getFromSide(side).getTileEntity(tileEntity.getWorldObj());
-				ItemStack prev = stack.copy();
-
-				if(tile instanceof IInventory && !(tile instanceof ILogisticalTransporter))
-				{
-					stack = InventoryUtils.putStackInInventory((IInventory)tile, stack, side.ordinal(), false);
-				}
-				else if(tile instanceof ILogisticalTransporter)
-				{
-					ItemStack rejects = TransporterUtils.insert(tileEntity, (ILogisticalTransporter)tile, stack, outputColor, true, 0);
-
-					if(TransporterManager.didEmit(stack, rejects))
-					{
-						stack = rejects;
-					}
-				}
-
-				if(stack == null || prev.stackSize != stack.stackSize)
-				{
-					trackers[index] = side.ordinal();
-				}
-
-				if(stack == null)
-				{
-					break;
-				}
-			}
-
-			tileEntity.inventory[slotID] = stack;
-			tileEntity.markDirty();
-		}
-
-		tickDelay = 20;
-	}
-
-	@Override
-	public boolean isEjecting()
-	{
-		return ejecting;
-	}
-
-	@Override
-	public void setEjecting(boolean eject)
-	{
-		ejecting = eject;
-		MekanismUtils.saveChunk(tileEntity);
-	}
-
-	@Override
-	public boolean hasStrictInput()
-	{
-		return strictInput;
-	}
-
-	@Override
-	public void setStrictInput(boolean strict)
-	{
-		strictInput = strict;
-		MekanismUtils.saveChunk(tileEntity);
-	}
-
-	@Override
-	public void setOutputColor(EnumColor color)
-	{
-		outputColor = color;
-		MekanismUtils.saveChunk(tileEntity);
-	}
-
-	@Override
-	public EnumColor getOutputColor()
-	{
-		return outputColor;
-	}
-
-	@Override
-	public void setInputColor(ForgeDirection side, EnumColor color)
-	{
-		inputColors[side.ordinal()] = color;
-		MekanismUtils.saveChunk(tileEntity);
-	}
-
-	@Override
-	public EnumColor getInputColor(ForgeDirection side)
-	{
-		return inputColors[side.ordinal()];
-	}
-
-	@Override
-	public void read(NBTTagCompound nbtTags)
-	{
-		ejecting = nbtTags.getBoolean("ejecting");
-		strictInput = nbtTags.getBoolean("strictInput");
-
-		if(nbtTags.hasKey("ejectColor"))
-		{
-			outputColor = TransporterUtils.colors.get(nbtTags.getInteger("ejectColor"));
-		}
-
-		for(int i = 0; i < sideData.availableSlots.length; i++)
-		{
-			trackers[i] = nbtTags.getInteger("tracker" + i);
-		}
-
-		for(int i = 0; i < 6; i++)
-		{
-			if(nbtTags.hasKey("inputColors" + i))
-			{
-				int inC = nbtTags.getInteger("inputColors" + i);
-
-				if(inC != -1)
-				{
-					inputColors[i] = TransporterUtils.colors.get(inC);
-				}
-				else {
-					inputColors[i] = null;
-				}
-			}
-		}
-	}
-
-	@Override
-	public void read(ByteBuf dataStream)
-	{
-		ejecting = dataStream.readBoolean();
-		strictInput = dataStream.readBoolean();
-
-		int c = dataStream.readInt();
-
-		if(c != -1)
-		{
-			outputColor = TransporterUtils.colors.get(c);
-		}
-		else {
-			outputColor = null;
-		}
-
-		for(int i = 0; i < 6; i++)
-		{
-			int inC = dataStream.readInt();
-
-			if(inC != -1)
-			{
-				inputColors[i] = TransporterUtils.colors.get(inC);
-			}
-			else {
-				inputColors[i] = null;
-			}
-		}
-	}
-
-	@Override
-	public void write(NBTTagCompound nbtTags)
-	{
-		nbtTags.setBoolean("ejecting", ejecting);
-		nbtTags.setBoolean("strictInput", strictInput);
-
-		if(outputColor != null)
-		{
-			nbtTags.setInteger("ejectColor", TransporterUtils.colors.indexOf(outputColor));
-		}
-
-		for(int i = 0; i < sideData.availableSlots.length; i++)
-		{
-			nbtTags.setInteger("tracker" + i, trackers[i]);
-		}
-
-		for(int i = 0; i < 6; i++)
-		{
-			if(inputColors[i] == null)
-			{
-				nbtTags.setInteger("inputColors" + i, -1);
-			}
-			else {
-				nbtTags.setInteger("inputColors" + i, TransporterUtils.colors.indexOf(inputColors[i]));
-			}
-		}
-	}
-
-	@Override
-	public void write(ArrayList data)
-	{
-		data.add(ejecting);
-		data.add(strictInput);
-
-		if(outputColor != null)
-		{
-			data.add(TransporterUtils.colors.indexOf(outputColor));
-		}
-		else {
-			data.add(-1);
-		}
-
-		for(int i = 0; i < 6; i++)
-		{
-			if(inputColors[i] == null)
-			{
-				data.add(-1);
-			}
-			else {
-				data.add(TransporterUtils.colors.indexOf(inputColors[i]));
-			}
-		}
-	}
+    @Override
+    public List<ISyncableData> getSpecificSyncableData() {
+        List<ISyncableData> list = new ArrayList<>();
+        list.add(SyncableBoolean.create(this::hasStrictInput, input -> strictInput = input));
+        list.add(SyncableInt.create(() -> TransporterUtils.getColorIndex(outputColor), index -> outputColor = TransporterUtils.readColor(index)));
+        for (int i = 0; i < EnumUtils.DIRECTIONS.length; i++) {
+            int idx = i;
+            list.add(SyncableInt.create(() -> TransporterUtils.getColorIndex(inputColors[idx]), index -> inputColors[idx] = TransporterUtils.readColor(index)));
+        }
+        return list;
+    }
 }

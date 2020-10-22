@@ -1,52 +1,18 @@
 package mekanism.client.sound;
 
+import javax.annotation.Nonnull;
 import mekanism.client.ClientTickHandler;
-import mekanism.common.item.ItemJetpack;
+import mekanism.common.registries.MekanismSounds;
+import net.minecraft.entity.player.PlayerEntity;
 
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.world.World;
+public class JetpackSound extends PlayerSound {
 
-public class JetpackSound extends PlayerSound
-{
-	public JetpackSound(String id, EntityPlayer entity)
-	{
-		super(id, "Jetpack.ogg", entity);
-	}
+    public JetpackSound(@Nonnull PlayerEntity player) {
+        super(player, MekanismSounds.JETPACK.getSoundEvent());
+    }
 
-	@Override
-	public boolean update(World world)
-	{
-		if(!super.update(world))
-		{
-			return false;
-		}
-		else if(!hasJetpack(player))
-		{
-			return false;
-		}
-		else {
-			if(ClientTickHandler.isJetpackOn(player) != isPlaying)
-			{
-				if(ClientTickHandler.isJetpackOn(player))
-				{
-					play();
-				}
-				else {
-					stopLoop();
-				}
-			}
-		}
-
-		if(isPlaying)
-		{
-			ticksSincePlay++;
-		}
-
-		return true;
-	}
-
-	private boolean hasJetpack(EntityPlayer player)
-	{
-		return player.inventory.armorInventory[2] != null && player.inventory.armorInventory[2].getItem() instanceof ItemJetpack;
-	}
+    @Override
+    public boolean shouldPlaySound(@Nonnull PlayerEntity player) {
+        return ClientTickHandler.isJetpackActive(player);
+    }
 }

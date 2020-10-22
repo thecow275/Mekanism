@@ -1,39 +1,35 @@
 package mekanism.common.tile;
 
+import javax.annotation.Nonnull;
+import mekanism.api.NBTConstants;
 import mekanism.common.block.BlockCardboardBox.BlockData;
+import mekanism.common.registries.MekanismTileEntityTypes;
+import mekanism.common.tile.base.TileEntityUpdateable;
+import mekanism.common.util.NBTUtils;
+import net.minecraft.block.BlockState;
+import net.minecraft.nbt.CompoundNBT;
 
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.tileentity.TileEntity;
+public class TileEntityCardboardBox extends TileEntityUpdateable {
 
-public class TileEntityCardboardBox extends TileEntity
-{
-	public BlockData storedData;
+    public BlockData storedData;
 
-	@Override
-	public void readFromNBT(NBTTagCompound nbtTags)
-	{
-		super.readFromNBT(nbtTags);
+    public TileEntityCardboardBox() {
+        super(MekanismTileEntityTypes.CARDBOARD_BOX.getTileEntityType());
+    }
 
-		if(nbtTags.hasKey("storedData"))
-		{
-			storedData = BlockData.read(nbtTags.getCompoundTag("storedData"));
-		}
-	}
+    @Override
+    public void read(@Nonnull BlockState state, @Nonnull CompoundNBT nbtTags) {
+        super.read(state, nbtTags);
+        NBTUtils.setCompoundIfPresent(nbtTags, NBTConstants.DATA, nbt -> storedData = BlockData.read(nbt));
+    }
 
-	@Override
-	public void writeToNBT(NBTTagCompound nbtTags)
-	{
-		super.writeToNBT(nbtTags);
-
-		if(storedData != null)
-		{
-			nbtTags.setTag("storedData", storedData.write(new NBTTagCompound()));
-		}
-	}
-
-	@Override
-	public boolean canUpdate()
-	{
-		return false;
-	}
+    @Nonnull
+    @Override
+    public CompoundNBT write(@Nonnull CompoundNBT nbtTags) {
+        super.write(nbtTags);
+        if (storedData != null) {
+            nbtTags.put(NBTConstants.DATA, storedData.write(new CompoundNBT()));
+        }
+        return nbtTags;
+    }
 }

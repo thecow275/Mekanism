@@ -1,74 +1,41 @@
 package mekanism.client.gui;
 
-import java.util.List;
-
-import mekanism.api.ListUtils;
-import mekanism.api.energy.IStrictEnergyStorage;
-import mekanism.client.gui.GuiEnergyGauge.IEnergyInfoHandler;
-import mekanism.client.gui.GuiEnergyInfo.IInfoHandler;
-import mekanism.client.gui.GuiSlot.SlotOverlay;
-import mekanism.client.gui.GuiSlot.SlotType;
-import mekanism.common.inventory.container.ContainerEnergyCube;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import java.util.Arrays;
+import javax.annotation.Nonnull;
+import mekanism.client.gui.element.gauge.GaugeType;
+import mekanism.client.gui.element.gauge.GuiEnergyGauge;
+import mekanism.client.gui.element.tab.GuiEnergyTab;
+import mekanism.client.gui.element.tab.GuiRedstoneControlTab;
+import mekanism.client.gui.element.tab.GuiSecurityTab;
+import mekanism.common.MekanismLang;
+import mekanism.common.inventory.container.tile.MekanismTileContainer;
 import mekanism.common.tile.TileEntityEnergyCube;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
+import mekanism.common.util.text.EnergyDisplay;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.util.text.ITextComponent;
 
-import net.minecraft.entity.player.InventoryPlayer;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+public class GuiEnergyCube extends GuiConfigurableTile<TileEntityEnergyCube, MekanismTileContainer<TileEntityEnergyCube>> {
 
-import org.lwjgl.opengl.GL11;
+    public GuiEnergyCube(MekanismTileContainer<TileEntityEnergyCube> container, PlayerInventory inv, ITextComponent title) {
+        super(container, inv, title);
+        dynamicSlots = true;
+    }
 
-@SideOnly(Side.CLIENT)
-public class GuiEnergyCube extends GuiMekanism
-{
-	public TileEntityEnergyCube tileEntity;
+    @Override
+    public void init() {
+        super.init();
+        addButton(new GuiRedstoneControlTab(this, tile));
+        addButton(new GuiSecurityTab<>(this, tile));
+        addButton(new GuiEnergyGauge(tile.getEnergyContainer(), GaugeType.WIDE, this, 55, 18));
+        addButton(new GuiEnergyTab(() -> Arrays.asList(MekanismLang.MATRIX_INPUT_RATE.translate(EnergyDisplay.of(tile.getInputRate())),
+              MekanismLang.MAX_OUTPUT.translate(EnergyDisplay.of(tile.getTier().getOutput()))), this));
+    }
 
-	public GuiEnergyCube(InventoryPlayer inventory, TileEntityEnergyCube tentity)
-	{
-		super(new ContainerEnergyCube(inventory, tentity));
-		tileEntity = tentity;
-		guiElements.add(new GuiRedstoneControl(this, tileEntity, MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png")));
-		guiElements.add(new GuiEnergyGauge(new IEnergyInfoHandler()
-		{
-			@Override
-			public IStrictEnergyStorage getEnergyStorage()
-			{
-				return tileEntity;
-			}
-		}, GuiEnergyGauge.Type.WIDE, this, MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png"), 55, 18));
-		guiElements.add(new GuiEnergyInfo(new IInfoHandler()
-		{
-			@Override
-			public List<String> getInfo()
-			{
-				return ListUtils.asList(
-						"Storing: " + MekanismUtils.getEnergyDisplay(tileEntity.getEnergy()),
-						"Max Output: " + MekanismUtils.getEnergyDisplay(tileEntity.getMaxOutput()) + "/t");
-			}
-		}, this, MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png")));
-		guiElements.add(new GuiSlot(SlotType.NORMAL, this, MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png"), 16, 34).with(SlotOverlay.MINUS));
-		guiElements.add(new GuiSlot(SlotType.NORMAL, this, MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png"), 142, 34).with(SlotOverlay.PLUS));
-	}
-
-	@Override
-	protected void drawGuiContainerForegroundLayer(int mouseX, int mouseY)
-	{
-		fontRendererObj.drawString(tileEntity.getInventoryName(), 43, 6, 0x404040);
-		fontRendererObj.drawString(MekanismUtils.localize("container.inventory"), 8, ySize - 96 + 2, 0x404040);
-
-		super.drawGuiContainerForegroundLayer(mouseX, mouseY);
-	}
-
-	@Override
-	protected void drawGuiContainerBackgroundLayer(float partialTick, int mouseX, int mouseY)
-	{
-		mc.renderEngine.bindTexture(MekanismUtils.getResource(ResourceType.GUI, "GuiEnergyCube.png"));
-		GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
-		int guiWidth = (width - xSize) / 2;
-		int guiHeight = (height - ySize) / 2;
-		drawTexturedModalRect(guiWidth, guiHeight, 0, 0, xSize, ySize);
-
-		super.drawGuiContainerBackgroundLayer(partialTick, mouseX, mouseY);
-	}
+    @Override
+    protected void drawForegroundText(@Nonnull MatrixStack matrix, int mouseX, int mouseY) {
+        renderTitleText(matrix);
+        drawString(matrix, MekanismLang.INVENTORY.translate(), 8, getYSize() - 96 + 2, titleTextColor());
+        super.drawForegroundText(matrix, mouseX, mouseY);
+    }
 }

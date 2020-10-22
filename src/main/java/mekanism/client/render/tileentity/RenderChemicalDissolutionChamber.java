@@ -1,44 +1,38 @@
 package mekanism.client.render.tileentity;
 
+import com.mojang.blaze3d.matrix.MatrixStack;
+import javax.annotation.ParametersAreNonnullByDefault;
 import mekanism.client.model.ModelChemicalDissolutionChamber;
-import mekanism.common.tile.TileEntityChemicalDissolutionChamber;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
+import mekanism.client.render.MekanismRenderer;
+import mekanism.common.base.ProfilerConstants;
+import mekanism.common.tile.machine.TileEntityChemicalDissolutionChamber;
+import net.minecraft.client.renderer.IRenderTypeBuffer;
+import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
+import net.minecraft.profiler.IProfiler;
+import net.minecraft.util.math.vector.Vector3f;
 
-import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
-import net.minecraft.tileentity.TileEntity;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+@ParametersAreNonnullByDefault
+public class RenderChemicalDissolutionChamber extends MekanismTileEntityRenderer<TileEntityChemicalDissolutionChamber> {
 
-import org.lwjgl.opengl.GL11;
+    private final ModelChemicalDissolutionChamber model = new ModelChemicalDissolutionChamber();
 
-@SideOnly(Side.CLIENT)
-public class RenderChemicalDissolutionChamber extends TileEntitySpecialRenderer
-{
-	private ModelChemicalDissolutionChamber model = new ModelChemicalDissolutionChamber();
+    public RenderChemicalDissolutionChamber(TileEntityRendererDispatcher renderer) {
+        super(renderer);
+    }
 
-	@Override
-	public void renderTileEntityAt(TileEntity tileEntity, double x, double y, double z, float partialTick)
-	{
-		renderAModelAt((TileEntityChemicalDissolutionChamber)tileEntity, x, y, z, partialTick);
-	}
+    @Override
+    protected void render(TileEntityChemicalDissolutionChamber tile, float partialTick, MatrixStack matrix, IRenderTypeBuffer renderer, int light, int overlayLight,
+          IProfiler profiler) {
+        matrix.push();
+        matrix.translate(0.5, 1.5, 0.5);
+        MekanismRenderer.rotate(matrix, tile.getDirection(), 0, 180, 90, 270);
+        matrix.rotate(Vector3f.ZP.rotationDegrees(180));
+        model.render(matrix, renderer, light, overlayLight, false);
+        matrix.pop();
+    }
 
-	private void renderAModelAt(TileEntityChemicalDissolutionChamber tileEntity, double x, double y, double z, float partialTick)
-	{
-		GL11.glPushMatrix();
-		GL11.glTranslatef((float)x + 0.5F, (float)y + 1.5F, (float)z + 0.5F);
-		bindTexture(MekanismUtils.getResource(ResourceType.RENDER, "ChemicalDissolutionChamber.png"));
-
-		switch(tileEntity.facing)
-		{
-			case 2: GL11.glRotatef(0, 0.0F, 1.0F, 0.0F); break;
-			case 3: GL11.glRotatef(180, 0.0F, 1.0F, 0.0F); break;
-			case 4: GL11.glRotatef(90, 0.0F, 1.0F, 0.0F); break;
-			case 5: GL11.glRotatef(270, 0.0F, 1.0F, 0.0F); break;
-		}
-
-		GL11.glRotatef(180F, 0.0F, 0.0F, 1.0F);
-		model.render(0.0625F);
-		GL11.glPopMatrix();
-	}
+    @Override
+    protected String getProfilerSection() {
+        return ProfilerConstants.CHEMICAL_DISSOLUTION_CHAMBER;
+    }
 }

@@ -1,127 +1,131 @@
 package mekanism.client.render.tileentity;
 
-import java.util.HashMap;
-
-import mekanism.api.Coord4D;
-import mekanism.api.EnumColor;
-import mekanism.api.gas.GasRegistry;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import java.util.EnumMap;
+import java.util.Map;
+import javax.annotation.Nullable;
+import javax.annotation.ParametersAreNonnullByDefault;
 import mekanism.client.render.MekanismRenderer;
-import mekanism.client.render.MekanismRenderer.DisplayInteger;
 import mekanism.client.render.MekanismRenderer.Model3D;
-import mekanism.common.Mekanism;
+import mekanism.common.base.ProfilerConstants;
+import mekanism.common.registries.MekanismGases;
 import mekanism.common.tile.TileEntityTeleporter;
+import net.minecraft.client.renderer.Atlases;
+import net.minecraft.client.renderer.IRenderTypeBuffer;
+import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
+import net.minecraft.profiler.IProfiler;
+import net.minecraft.util.Direction;
 
-import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
-import net.minecraft.init.Blocks;
-import net.minecraft.tileentity.TileEntity;
-import net.minecraftforge.common.util.ForgeDirection;
+@ParametersAreNonnullByDefault
+public class RenderTeleporter extends MekanismTileEntityRenderer<TileEntityTeleporter> {
 
-import org.lwjgl.opengl.GL11;
+    private static final Map<Direction, Model3D> modelCache = new EnumMap<>(Direction.class);
+    private static final Map<Direction, Model3D> rotatedModelCache = new EnumMap<>(Direction.class);
 
-public class RenderTeleporter extends TileEntitySpecialRenderer
-{
-	private HashMap<Integer, DisplayInteger> cachedOverlays = new HashMap<Integer, DisplayInteger>();
+    public static void resetCachedModels() {
+        modelCache.clear();
+        rotatedModelCache.clear();
+    }
 
-	@Override
-	public void renderTileEntityAt(TileEntity tileEntity, double x, double y, double z, float partialTick)
-	{
-		renderAModelAt((TileEntityTeleporter)tileEntity, x, y, z, partialTick);
-	}
+    public RenderTeleporter(TileEntityRendererDispatcher renderer) {
+        super(renderer);
+    }
 
-	public void renderAModelAt(TileEntityTeleporter tileEntity, double x, double y, double z, float partialTick)
-	{
-		if(tileEntity.shouldRender)
-		{
-			push();
+    @Override
+    protected void render(TileEntityTeleporter tile, float partialTick, MatrixStack matrix, IRenderTypeBuffer renderer, int light, int overlayLight, IProfiler profiler) {
+        if (tile.shouldRender && tile.getWorld() != null) {
+            MekanismRenderer.renderObject(getOverlayModel(tile.frameDirection(), tile.frameRotated()), matrix, renderer.getBuffer(Atlases.getTranslucentCullBlockType()),
+                  MekanismRenderer.getColorARGB(tile.getColor(), 0.75F), MekanismRenderer.FULL_LIGHT, overlayLight);
+        }
+    }
 
-			GL11.glColor4f(EnumColor.PURPLE.getColor(0), EnumColor.PURPLE.getColor(1), EnumColor.PURPLE.getColor(2), 0.75F);
+    @Override
+    protected String getProfilerSection() {
+        return ProfilerConstants.TELEPORTER;
+    }
 
-			bindTexture(MekanismRenderer.getBlocksTexture());
-			GL11.glTranslatef((float)x, (float)y, (float)z);
+    private Model3D getOverlayModel(@Nullable Direction direction, boolean rotated) {
+        if (direction == null) {
+            direction = Direction.UP;
+        }
+        Map<Direction, Model3D> cache = rotated ? rotatedModelCache : modelCache;
+        if (!cache.containsKey(direction)) {
+            Model3D model = new Model3D();
+            model.setTexture(MekanismRenderer.getChemicalTexture(MekanismGases.HYDROGEN.getChemical()));
+            cache.put(direction, model);
+            if (direction == Direction.UP) {
+                model.minY = 1;
+                model.maxY = 3;
+                setUpDownDimensions(model, rotated);
+            } else if (direction == Direction.DOWN) {
+                model.minY = -2;
+                model.maxY = 0;
+                setUpDownDimensions(model, rotated);
+            } else if (direction == Direction.EAST) {
+                model.minX = 1;
+                model.maxX = 3;
+                setEastWestDimensions(model, rotated);
+            } else if (direction == Direction.WEST) {
+                model.minX = -2;
+                model.maxX = 0;
+                setEastWestDimensions(model, rotated);
+            } else if (direction == Direction.NORTH) {
+                model.minZ = -2;
+                model.maxZ = 0;
+                setNorthSouthDimensions(model, rotated);
+            } else if (direction == Direction.SOUTH) {
+                model.minZ = 0;
+                model.maxZ = 3;
+                setNorthSouthDimensions(model, rotated);
+            }
+        }
+        return cache.get(direction);
+    }
 
-			Coord4D obj = Coord4D.get(tileEntity).getFromSide(ForgeDirection.WEST);
-			int type = 0;
+    private void setUpDownDimensions(Model3D model, boolean rotated) {
+        if (rotated) {
+            model.minX = 0.46;
+            model.maxX = 0.54;
+            model.minZ = 0;
+            model.maxZ = 1;
+        } else {
+            model.minX = 0;
+            model.maxX = 1;
+            model.minZ = 0.46;
+            model.maxZ = 0.54;
+        }
+    }
 
-			if(obj.getBlock(tileEntity.getWorldObj()) == Mekanism.BasicBlock && obj.getMetadata(tileEntity.getWorldObj()) == 7)
-			{
-				type = 1;
-			}
+    private void setEastWestDimensions(Model3D model, boolean rotated) {
+        if (rotated) {
+            model.minY = 0.46;
+            model.maxY = 0.54;
+            model.minZ = 0;
+            model.maxZ = 1;
+        } else {
+            model.minY = 0;
+            model.maxY = 1;
+            model.minZ = 0.46;
+            model.maxZ = 0.54;
+        }
+    }
 
-			int display = getOverlayDisplay(type).display;
-			GL11.glCallList(display);
+    private void setNorthSouthDimensions(Model3D model, boolean rotated) {
+        if (rotated) {
+            model.minY = 0.46;
+            model.maxY = 0.54;
+            model.minX = 0;
+            model.maxX = 1;
+        } else {
+            model.minY = 0;
+            model.maxY = 1;
+            model.minX = 0.46;
+            model.maxX = 0.54;
+        }
+    }
 
-			pop();
-		}
-	}
-
-	private void pop()
-	{
-		GL11.glPopAttrib();
-		MekanismRenderer.glowOff();
-		MekanismRenderer.blendOff();
-		GL11.glPopMatrix();
-	}
-
-	private void push()
-	{
-		GL11.glPushMatrix();
-		GL11.glPushAttrib(GL11.GL_ENABLE_BIT);
-		GL11.glEnable(GL11.GL_CULL_FACE);
-		GL11.glDisable(GL11.GL_LIGHTING);
-		MekanismRenderer.glowOn();
-		MekanismRenderer.blendOn();
-	}
-
-	private DisplayInteger getOverlayDisplay(Integer type)
-	{
-		if(cachedOverlays.containsKey(type))
-		{
-			return cachedOverlays.get(type);
-		}
-
-		Model3D toReturn = new Model3D();
-		toReturn.baseBlock = Blocks.stone;
-		toReturn.setTexture(GasRegistry.getGas("oxygen").getIcon());
-
-		DisplayInteger display = DisplayInteger.createAndStart();
-
-		if(cachedOverlays.containsKey(type))
-		{
-			cachedOverlays.get(type);
-		}
-		else {
-			cachedOverlays.put(type, display);
-		}
-
-		switch(type)
-		{
-			case 0:
-			{
-				toReturn.minY = 1;
-				toReturn.maxY = 3;
-
-				toReturn.minX = 0.46;
-				toReturn.minZ = 0;
-				toReturn.maxX = 0.54;
-				toReturn.maxZ = 1;
-				break;
-			}
-			case 1:
-			{
-				toReturn.minY = 1;
-				toReturn.maxY = 3;
-
-				toReturn.minX = 0;
-				toReturn.minZ = 0.46;
-				toReturn.maxX = 1;
-				toReturn.maxZ = 0.54;
-				break;
-			}
-		}
-
-		MekanismRenderer.renderObject(toReturn);
-		display.endList();
-
-		return display;
-	}
+    @Override
+    public boolean isGlobalRenderer(TileEntityTeleporter tile) {
+        return tile.shouldRender && tile.getWorld() != null;
+    }
 }

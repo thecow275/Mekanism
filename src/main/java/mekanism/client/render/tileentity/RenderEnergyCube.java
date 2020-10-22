@@ -1,87 +1,76 @@
 package mekanism.client.render.tileentity;
 
-import mekanism.api.EnumColor;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import javax.annotation.ParametersAreNonnullByDefault;
 import mekanism.client.MekanismClient;
 import mekanism.client.model.ModelEnergyCube;
 import mekanism.client.model.ModelEnergyCube.ModelEnergyCore;
 import mekanism.client.render.MekanismRenderer;
+import mekanism.common.base.ProfilerConstants;
 import mekanism.common.tile.TileEntityEnergyCube;
 import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
+import net.minecraft.client.renderer.IRenderTypeBuffer;
+import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
+import net.minecraft.profiler.IProfiler;
+import net.minecraft.util.math.vector.Vector3f;
 
-import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
-import net.minecraft.tileentity.TileEntity;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+@ParametersAreNonnullByDefault
+public class RenderEnergyCube extends MekanismTileEntityRenderer<TileEntityEnergyCube> {
 
-import org.lwjgl.opengl.GL11;
+    public static final Vector3f coreVec = new Vector3f(0.0F, MekanismUtils.ONE_OVER_ROOT_TWO, MekanismUtils.ONE_OVER_ROOT_TWO);
+    private final ModelEnergyCube model = new ModelEnergyCube();
+    private final ModelEnergyCore core = new ModelEnergyCore();
 
-@SideOnly(Side.CLIENT)
-public class RenderEnergyCube extends TileEntitySpecialRenderer
-{
-	private ModelEnergyCube model = new ModelEnergyCube();
-	private ModelEnergyCore core = new ModelEnergyCore();
+    public RenderEnergyCube(TileEntityRendererDispatcher renderer) {
+        super(renderer);
+    }
 
-	@Override
-	public void renderTileEntityAt(TileEntity tileEntity, double x, double y, double z, float partialTick)
-	{
-		renderAModelAt((TileEntityEnergyCube)tileEntity, x, y, z, partialTick);
-	}
+    @Override
+    protected void render(TileEntityEnergyCube tile, float partialTick, MatrixStack matrix, IRenderTypeBuffer renderer, int light, int overlayLight, IProfiler profiler) {
+        profiler.startSection(ProfilerConstants.FRAME);
+        matrix.push();
+        matrix.translate(0.5, 1.5, 0.5);
+        switch (tile.getDirection()) {
+            case DOWN:
+                matrix.rotate(Vector3f.XN.rotationDegrees(90));
+                matrix.translate(0, 1, -1);
+                break;
+            case UP:
+                matrix.rotate(Vector3f.XP.rotationDegrees(90));
+                matrix.translate(0, 1, 1);
+                break;
+            default:
+                //Otherwise use the helper method for handling different face options because it is one of them
+                MekanismRenderer.rotate(matrix, tile.getDirection(), 0, 180, 90, 270);
+                break;
+        }
+        matrix.rotate(Vector3f.ZP.rotationDegrees(180));
+        profiler.startSection(ProfilerConstants.CORNERS);
+        model.render(matrix, renderer, light, overlayLight, tile.getTier(), false, false);
+        profiler.endStartSection(ProfilerConstants.SIDES);
+        model.renderSidesBatched(tile, matrix, renderer, light, overlayLight);
+        profiler.endSection();//End sides
+        matrix.pop();
 
-	private void renderAModelAt(TileEntityEnergyCube tileEntity, double x, double y, double z, float partialTick)
-	{
-		GL11.glPushMatrix();
-		GL11.glTranslatef((float)x + 0.5F, (float)y + 1.5F, (float)z + 0.5F);
+        profiler.endStartSection(ProfilerConstants.CORE);//End frame start core
+        float energyScale = tile.getEnergyScale();
+        if (energyScale > 0) {
+            matrix.push();
+            matrix.translate(0.5, 0.5, 0.5);
+            float ticks = MekanismClient.ticksPassed + partialTick;
+            matrix.scale(0.4F, 0.4F, 0.4F);
+            matrix.translate(0, Math.sin(Math.toRadians(3 * ticks)) / 7, 0);
+            float scaledTicks = 4 * ticks;
+            matrix.rotate(Vector3f.YP.rotationDegrees(scaledTicks));
+            matrix.rotate(coreVec.rotationDegrees(36F + scaledTicks));
+            core.render(matrix, renderer, MekanismRenderer.FULL_LIGHT, overlayLight, tile.getTier().getBaseTier().getColor(), energyScale);
+            matrix.pop();
+        }
+        profiler.endSection();
+    }
 
-		bindTexture(MekanismUtils.getResource(ResourceType.RENDER, "EnergyCube" + tileEntity.tier.name + ".png"));
-
-		switch(tileEntity.facing)
-		{
-			case 0:
-				GL11.glRotatef(90F, -1.0F, 0.0F, 0.0F);
-				GL11.glTranslatef(0.0F, 1.0F, -1.0F);
-				break;
-			case 1:
-				GL11.glRotatef(90F, 1.0F, 0.0F, 0.0F);
-				GL11.glTranslatef(0.0F, 1.0F, 1.0F);
-				break;
-			case 2: GL11.glRotatef(0, 0.0F, 1.0F, 0.0F); break;
-			case 3: GL11.glRotatef(180, 0.0F, 1.0F, 0.0F); break;
-			case 4: GL11.glRotatef(90, 0.0F, 1.0F, 0.0F); break;
-			case 5: GL11.glRotatef(270, 0.0F, 1.0F, 0.0F); break;
-		}
-
-		GL11.glRotatef(180F, 0.0F, 0.0F, 1.0F);
-		model.render(0.0625F);
-		GL11.glPopMatrix();
-
-		if(tileEntity.getEnergy()/tileEntity.getMaxEnergy() > 0.1)
-		{
-
-			GL11.glPushMatrix();
-			GL11.glTranslated(x + 0.5, y + 0.5, z + 0.5);
-			bindTexture(MekanismUtils.getResource(ResourceType.RENDER, "EnergyCore.png"));
-
-			MekanismRenderer.blendOn();
-			MekanismRenderer.glowOn();
-
-			EnumColor c = tileEntity.tier.color;
-
-
-			GL11.glPushMatrix();
-			GL11.glScalef(0.4F, 0.4F, 0.4F);
-			GL11.glColor4f(c.getColor(0), c.getColor(1), c.getColor(2), (float) (tileEntity.getEnergy() / tileEntity.getMaxEnergy()));
-			GL11.glTranslatef(0, (float) Math.sin(Math.toRadians((MekanismClient.ticksPassed + partialTick) * 3)) / 7, 0);
-			GL11.glRotatef((MekanismClient.ticksPassed + partialTick) * 4, 0, 1, 0);
-			GL11.glRotatef(36F + (MekanismClient.ticksPassed + partialTick) * 4, 0, 1, 1);
-			core.render(0.0625F);
-			GL11.glPopMatrix();
-
-
-			MekanismRenderer.glowOff();
-			MekanismRenderer.blendOff();
-
-			GL11.glPopMatrix();
-		}
-	}
+    @Override
+    protected String getProfilerSection() {
+        return ProfilerConstants.ENERGY_CUBE;
+    }
 }

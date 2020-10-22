@@ -1,166 +1,117 @@
 package mekanism.common;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
+import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
-
-import mekanism.api.Coord4D;
-import mekanism.common.tank.DynamicTankCache;
-import mekanism.common.tile.TileEntityDynamicTank;
-
-import net.minecraft.item.ItemStack;
-import net.minecraft.tileentity.TileEntity;
-import net.minecraft.world.ChunkCoordIntPair;
+import mekanism.common.config.MekanismConfig;
+import mekanism.common.lib.chunkloading.ChunkManager;
+import mekanism.common.lib.frequency.FrequencyManager;
+import mekanism.common.world.GenHandler;
+import net.minecraft.util.RegistryKey;
+import net.minecraft.util.ResourceLocation;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.World;
-import cpw.mods.fml.common.eventhandler.SubscribeEvent;
-import cpw.mods.fml.common.gameevent.TickEvent.Phase;
-import cpw.mods.fml.common.gameevent.TickEvent.WorldTickEvent;
-import cpw.mods.fml.relauncher.Side;
+import net.minecraft.world.server.ServerWorld;
+import net.minecraftforge.event.TickEvent.Phase;
+import net.minecraftforge.event.TickEvent.ServerTickEvent;
+import net.minecraftforge.event.TickEvent.WorldTickEvent;
+import net.minecraftforge.event.world.WorldEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 
-public class CommonWorldTickHandler
-{
-	private static final long maximumDeltaTimeNanoSecs = 16000000; // 16 milliseconds
-	
-	private HashMap<Integer, Queue<ChunkCoordIntPair>> chunkRegenMap;
-	
-	public void addRegenChunk(int dimensionId, ChunkCoordIntPair chunkCoord) 
-	{
-		if(chunkRegenMap == null) 
-		{
-			chunkRegenMap = new HashMap<Integer, Queue<ChunkCoordIntPair>>();
-		}
+public class CommonWorldTickHandler {
 
-		if(!chunkRegenMap.containsKey(dimensionId))
-		{
-			LinkedList<ChunkCoordIntPair> list = new LinkedList<ChunkCoordIntPair>();
-			list.add(chunkCoord);
-			chunkRegenMap.put(dimensionId, list);
-		}
-		else {
-			if(!chunkRegenMap.get(dimensionId).contains(chunkCoord)) 
-			{
-				chunkRegenMap.get(dimensionId).add(chunkCoord);
-			}
-		}
-	}
-	
-	public void resetRegenChunks()
-	{
-		if(chunkRegenMap != null)
-		{
-			chunkRegenMap.clear();
-		}
-	}
-	
-	@SubscribeEvent
-	public void onTick(WorldTickEvent event)
-	{
-		if(event.side == Side.SERVER && event.phase == Phase.END)
-		{
-			tickEnd(event.world);
-		}
-	}
+    private static final long maximumDeltaTimeNanoSecs = 16_000_000; // 16 milliseconds
 
-	public void tickEnd(World world)
-	{
-		ArrayList<Integer> idsToKill = new ArrayList<Integer>();
-		HashMap<Integer, HashSet<Coord4D>> tilesToKill = new HashMap<Integer, HashSet<Coord4D>>();
+    private Map<ResourceLocation, Queue<ChunkPos>> chunkRegenMap;
+    public static boolean flushTagAndRecipeCaches;
 
-		if(!world.isRemote)
-		{
-			for(Map.Entry<Integer, DynamicTankCache> entry : Mekanism.dynamicInventories.entrySet())
-			{
-				int inventoryID = entry.getKey();
+    public void addRegenChunk(RegistryKey<World> dimension, ChunkPos chunkCoord) {
+        if (chunkRegenMap == null) {
+            chunkRegenMap = new Object2ObjectArrayMap<>();
+        }
+        ResourceLocation dimensionName = dimension.getLocation();
+        if (!chunkRegenMap.containsKey(dimensionName)) {
+            LinkedList<ChunkPos> list = new LinkedList<>();
+            list.add(chunkCoord);
+            chunkRegenMap.put(dimensionName, list);
+        } else {
+            Queue<ChunkPos> regenPositions = chunkRegenMap.get(dimensionName);
+            if (!regenPositions.contains(chunkCoord)) {
+                regenPositions.add(chunkCoord);
+            }
+        }
+    }
 
-				for(Coord4D obj : entry.getValue().locations)
-				{
-					if(obj.dimensionId == world.provider.dimensionId)
-					{
-						TileEntity tileEntity = obj.getTileEntity(world);
+    public void resetRegenChunks() {
+        if (chunkRegenMap != null) {
+            chunkRegenMap.clear();
+        }
+    }
 
-						if(!(tileEntity instanceof TileEntityDynamicTank) || ((TileEntityDynamicTank)tileEntity).inventoryID != inventoryID)
-						{
-							if(!tilesToKill.containsKey(inventoryID))
-							{
-								tilesToKill.put(inventoryID, new HashSet<Coord4D>());
-							}
+    @SubscribeEvent
+    public void worldLoadEvent(WorldEvent.Load event) {
+        if (!event.getWorld().isRemote()) {
+            FrequencyManager.load();
+            Mekanism.radiationManager.createOrLoad();
+            if (event.getWorld() instanceof ServerWorld) {
+                ChunkManager.worldLoad((ServerWorld) event.getWorld());
+            }
+        }
+    }
 
-							tilesToKill.get(inventoryID).add(obj);
-						}
-					}
-				}
+    @SubscribeEvent
+    public void onTick(ServerTickEvent event) {
+        if (event.side.isServer() && event.phase == Phase.END) {
+            serverTick();
+        }
+    }
 
-				if(entry.getValue().locations.isEmpty())
-				{
-					idsToKill.add(inventoryID);
-				}
-			}
+    @SubscribeEvent
+    public void onTick(WorldTickEvent event) {
+        if (event.side.isServer() && event.phase == Phase.END) {
+            tickEnd((ServerWorld) event.world);
+        }
+    }
 
-			for(Map.Entry<Integer, HashSet<Coord4D>> entry : tilesToKill.entrySet())
-			{
-				for(Coord4D obj : entry.getValue())
-				{
-					Mekanism.dynamicInventories.get(entry.getKey()).locations.remove(obj);
-				}
-			}
+    private void serverTick() {
+        FrequencyManager.tick();
+        Mekanism.radiationManager.tickServer();
+    }
 
-			for(int inventoryID : idsToKill)
-			{
-				for(Coord4D obj : Mekanism.dynamicInventories.get(inventoryID).locations)
-				{
-					TileEntityDynamicTank dynamicTank = (TileEntityDynamicTank)obj.getTileEntity(world);
+    private void tickEnd(ServerWorld world) {
+        if (!world.isRemote) {
+            Mekanism.radiationManager.tickServerWorld(world);
+            ChunkManager.tick(world);
+            flushTagAndRecipeCaches = false;
 
-					if(dynamicTank != null)
-					{
-						dynamicTank.cachedData = new DynamicTankCache();
-						dynamicTank.inventory = new ItemStack[2];
-						dynamicTank.inventoryID = -1;
-					}
-				}
+            if (chunkRegenMap == null || !MekanismConfig.world.enableRegeneration.get()) {
+                return;
+            }
+            ResourceLocation dimensionName = world.getDimensionKey().getLocation();
+            //Credit to E. Beef
+            if (chunkRegenMap.containsKey(dimensionName)) {
+                Queue<ChunkPos> chunksToGen = chunkRegenMap.get(dimensionName);
+                long startTime = System.nanoTime();
+                while (System.nanoTime() - startTime < maximumDeltaTimeNanoSecs && !chunksToGen.isEmpty()) {
+                    ChunkPos nextChunk = chunksToGen.poll();
+                    if (nextChunk == null) {
+                        break;
+                    }
 
-				Mekanism.dynamicInventories.remove(inventoryID);
-			}
-			
-			if(chunkRegenMap == null) 
-			{ 
-				return; 
-			}
-			
-			int dimensionId = world.provider.dimensionId;
-
-			//Credit to E. Beef
-			if(chunkRegenMap.containsKey(dimensionId)) 
-			{
-				Queue<ChunkCoordIntPair> chunksToGen = chunkRegenMap.get(dimensionId);
-				long startTime = System.nanoTime();
-				
-				while(System.nanoTime() - startTime < maximumDeltaTimeNanoSecs && !chunksToGen.isEmpty()) 
-				{
-					ChunkCoordIntPair nextChunk = chunksToGen.poll();
-					
-					if(nextChunk == null) 
-					{ 
-						break; 
-					}
-
-			        Random fmlRandom = new Random(world.getSeed());
-			        long xSeed = fmlRandom.nextLong() >> 2 + 1L;
-			        long zSeed = fmlRandom.nextLong() >> 2 + 1L;
-			        fmlRandom.setSeed((xSeed*nextChunk.chunkXPos + zSeed*nextChunk.chunkZPos) ^ world.getSeed());
-
-					Mekanism.genHandler.generate(fmlRandom, nextChunk.chunkXPos, nextChunk.chunkZPos, world, world.getChunkProvider(), world.getChunkProvider());
-					Mekanism.logger.info("[Mekanism] Regenerating ores at chunk " + nextChunk);
-				}
-
-				if(chunksToGen.isEmpty()) 
-				{
-					chunkRegenMap.remove(dimensionId);
-				}
-			}
-		}
-	}
+                    Random fmlRandom = new Random(world.getSeed());
+                    long xSeed = fmlRandom.nextLong() >> 2 + 1L;
+                    long zSeed = fmlRandom.nextLong() >> 2 + 1L;
+                    fmlRandom.setSeed((xSeed * nextChunk.x + zSeed * nextChunk.z) ^ world.getSeed());
+                    if (GenHandler.generate(world, fmlRandom, nextChunk.x, nextChunk.z)) {
+                        Mekanism.logger.info("Regenerating ores at chunk {}", nextChunk);
+                    }
+                }
+                if (chunksToGen.isEmpty()) {
+                    chunkRegenMap.remove(dimensionName);
+                }
+            }
+        }
+    }
 }

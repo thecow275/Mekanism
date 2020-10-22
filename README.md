@@ -1,25 +1,40 @@
-# Mekanism for Minecraft 1.7.10 #
 
-[**Official Website**](http://aidancbrady.com)
+[![Build Status](https://travis-ci.com/mekanism/Mekanism.svg?branch=1.16.x)](https://travis-ci.com/mekanism/Mekanism)
 
-Source code.  More information can be found on the [mod's forum post](http://www.minecraftforum.net/topic/1361286-164-mekanism-557-universal-cable-dynamic-tanks-wind-power/).
+![Mekanism Logo](logo.png)
 
-# About #
+# Mekanism for Minecraft 1.16 #
 
-Mekanism is a Minecraft add-on featuring special machinery that can be used to create powerful tools, armor, and weapons.  It also includes a gas network that can be implemented by other mods.
+Mekanism is a Minecraft add-on featuring high-tech machinery that can be used to create powerful tools, 
+armor, and weapons. You can find more detail on the features at the [**Official Website**](http://aidancbrady.com/mekanism/).
+Mekanism is an independent tech mod that brings low, mid, and high tier machinery to Minecraft. The 
+mod doesn't have an actual goal, and you'll understand this when you see all the random content 
+Mekanism contains, from jetpacks to balloons. However, I can assure you that you'll notice all the 
+content blend together as you get to know the mod better!
 
-# Modpacks, websites, reviews, or anything else #
+Mekanism uses a tier-based system when organizing several of its core features, including Energy 
+Cubes and Factories. There are four tiers: basic, the simplest tier, advanced, the second-most basic 
+tier, elite, the second-most complex tier, and ultimate, the most complex tier. You can upgrade 
+tiers by placing the component in a crafting grid and surrounding it with the necessary resources 
+for the next upgrade.
 
-Some people really don't like others to review or distribute their mods, something which I honestly don't understand.  You are the ones who help get this mod into the Minecraft community's hands, which seems like a good thing from my perspective.
-So go ahead, do whatever you like.  I honestly just don't want you messaging me on IRC or on the forums, asking my permission.  If you need proof, provide a link to this page, or give them information on the MIT license.
+By the time you've been using Mekanism for a while, you'll have a near-instructible suit of Obsidian 
+Armor, be obtaining four ingots for each ore you mine, have the ability to fly wherever you want with 
+the hydrogen-powered jetpacks, and have a cute robotic friend following you around while you mine. :)
+
+# Discord #
+
+Mekanism has a [discord](https://discord.gg/nmSjMGc) where you can come chat with other Mekanism users and the developers. Join us!
+
+# Translating #
+
+If you would like to help translate Mekanism, you can do so via [Crowdin](https://crowdin.com/project/mekanism)
 
 # License #
 
-Licenses are not really my friend -- strict closed source software really drives me nuts.  Even more, with a derivative work coded in a language such as Java, nothing can really prevent people from looking through my source with JD-GUI.
-However, I welcome people wanting to learn how to mod, and because of this, I have licensed Mekanism under the MIT License, which doesn't include many guidelines.  This basically means you have the right to use my mod's source code, learn
-from it, and even use it in your own mod.  You even have the right to distribute this mod to the public and make money off of it, although this is something I wouldn't necessarily encourage! :)
+Mekanism is under the MIT license. You may use it in modpacks, reviews or any other form as long as you abide by the terms below. 
 
-Copyright © 2014 Aidan Brady
+Copyright 2017 Aidan C. Brady
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -27,22 +42,50 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-# Developers & Credits #
+# Maven
+Mekansim v10+ is also available via [ModMaven](https://modmaven.k-4u.nl/) for developers wishing to make use of our API. Big thanks to K4Unl for hosting.
 
-**Lead Developer:** aidancbrady
+Update your `build.gradle` file to include the following. 
 
-**Co-developer:** unpairedbracket
+```groovy
+repositories {
+    maven { url 'https://modmaven.k-4u.nl/' }
+}
 
-**Artwork:** Cheapshot, Archadia
+dependencies {
+    compileOnly "mekanism:Mekanism:${mekanism_version}:api"
+    
+    // If you want to test/use Mekanism & its modules during `runClient` invocation, use the following
+    runtimeOnly fg.deobf("mekanism:Mekanism:${mekanism_version}")// core
+    runtimeOnly fg.deobf("mekanism:Mekanism:${mekanism_version}:additions")// Mekanism: Additions
+    runtimeOnly fg.deobf("mekanism:Mekanism:${mekanism_version}:generators")// Mekanism: Generators
+    runtimeOnly fg.deobf("mekanism:Mekanism:${mekanism_version}:tools")// Mekanism: Tools
+}
+```
 
-**Contributors:** micdoodle
+Add to `gradle.properties` (see [Maven](https://modmaven.k-4u.nl/mekanism/Mekanism/) for the list of available versions)
 
-**Credits:**
+```properties
+mekanism_version=1.16.1-10.0.0.423
+```
 
-Thanks to AbrarSyed, Lunatrius, and AtomicStryker for helping me with the port to 1.3.2.
+# Credits #
 
-Thanks to _303 and skyboy for helping me with animated machine textures.
+  * aidancbrady
+  * thommy101
+  * thiakil
+  * pupnewfster
+  * dizzyd  
+  * unpairedbracket
+  * CyanideX (artwork)
+  * Cheapshot (artwork)
+  * Archadia (artwork)
+  * micdoodle
+  * Bluexin
+  * JaSpr
 
-Thanks to Mattredsox and Calclavia for helping me out with UE's electricity system.
-
-Last but not least, thanks to Alblaka, SirSengir, CovertJaguar, Calclavia and dan200 for their wonderful APIs and descriptive javadocs.
+## YourKit ##
+YourKit supports open source projects with innovative and intelligent tools for monitoring and 
+profiling Java and .NET applications. YourKit is the creator of [YourKit Java Profiler](https://www.yourkit.com/java/profiler), 
+[YourKit .NET Profiler](https://www.yourkit.com/.net/profiler/) and [YourKit YouMonitor](https://www.yourkit.com/youmonitor/).
+Mekanism uses YourKit for all our profiling needs!

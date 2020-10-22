@@ -1,67 +1,28 @@
 package mekanism.common.block;
 
-import java.util.List;
-
-import mekanism.common.Mekanism;
-
+import javax.annotation.Nonnull;
+import mekanism.api.text.ILangEntry;
+import mekanism.common.block.interfaces.IHasDescription;
+import mekanism.common.block.states.BlockStateHelper;
+import mekanism.common.resource.OreType;
+import net.minecraft.block.AbstractBlock;
 import net.minecraft.block.Block;
 import net.minecraft.block.material.Material;
-import net.minecraft.client.renderer.texture.IIconRegister;
-import net.minecraft.creativetab.CreativeTabs;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.util.IIcon;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraftforge.common.ToolType;
 
-/**
- * Block class for handling multiple ore block IDs.
- * 0: Osmium Ore
- * 1: Copper Ore
- * 2: Tin Ore
- * @author AidanBrady
- *
- */
-public class BlockOre extends Block
-{
-	public IIcon[] icons = new IIcon[256];
+public class BlockOre extends Block implements IHasDescription {
 
-	public BlockOre()
-	{
-		super(Material.rock);
-		setHardness(3F);
-		setResistance(5F);
-		setCreativeTab(Mekanism.tabMekanism);
-	}
+    private final OreType ore;
 
-	@Override
-	@SideOnly(Side.CLIENT)
-	public void registerBlockIcons(IIconRegister register)
-	{
-		icons[0] = register.registerIcon("mekanism:OsmiumOre");
-		icons[1] = register.registerIcon("mekanism:CopperOre");
-		icons[2] = register.registerIcon("mekanism:TinOre");
-	}
+    public BlockOre(OreType ore) {
+        super(BlockStateHelper.applyLightLevelAdjustments(AbstractBlock.Properties.create(Material.ROCK).hardnessAndResistance(3F, 5F)
+              .setRequiresTool().harvestTool(ToolType.PICKAXE).harvestLevel(1)));
+        this.ore = ore;
+    }
 
-	@Override
-	@SideOnly(Side.CLIENT)
-	public IIcon getIcon(int side, int meta)
-	{
-		return icons[meta];
-	}
-
-	@Override
-	public int damageDropped(int i)
-	{
-		return i;
-	}
-
-	@Override
-	@SideOnly(Side.CLIENT)
-	public void getSubBlocks(Item item, CreativeTabs creativetabs, List list)
-	{
-		list.add(new ItemStack(item, 1, 0));
-		list.add(new ItemStack(item, 1, 1));
-		list.add(new ItemStack(item, 1, 2));
-	}
+    @Nonnull
+    @Override
+    public ILangEntry getDescription() {
+        return () -> "description.mekanism." + ore.getResource().getRegistrySuffix() + "_ore";
+    }
 }

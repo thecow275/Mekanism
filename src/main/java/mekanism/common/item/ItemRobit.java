@@ -1,136 +1,86 @@
 package mekanism.common.item;
 
 import java.util.List;
-
+import javax.annotation.Nonnull;
 import mekanism.api.Coord4D;
-import mekanism.api.EnumColor;
-import mekanism.common.ISustainedInventory;
+import mekanism.api.NBTConstants;
+import mekanism.api.energy.IEnergyContainer;
+import mekanism.api.text.EnumColor;
+import mekanism.common.MekanismLang;
 import mekanism.common.entity.EntityRobit;
+import mekanism.common.item.interfaces.IItemSustainedInventory;
 import mekanism.common.tile.TileEntityChargepad;
+import mekanism.common.tile.base.TileEntityMekanism;
+import mekanism.common.util.ItemDataUtils;
 import mekanism.common.util.MekanismUtils;
-
-import net.minecraft.client.renderer.texture.IIconRegister;
-import net.minecraft.entity.player.EntityPlayer;
+import mekanism.common.util.StorageUtils;
+import mekanism.common.util.text.BooleanStateDisplay.YesNo;
+import net.minecraft.client.util.ITooltipFlag;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.nbt.NBTTagList;
-import net.minecraft.tileentity.TileEntity;
+import net.minecraft.item.ItemUseContext;
+import net.minecraft.item.Rarity;
+import net.minecraft.util.ActionResultType;
+import net.minecraft.util.Hand;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.text.ITextComponent;
 import net.minecraft.world.World;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.api.distmarker.OnlyIn;
 
-public class ItemRobit extends ItemEnergized implements ISustainedInventory
-{
-	public ItemRobit()
-	{
-		super(100000);
-	}
+public class ItemRobit extends ItemEnergized implements IItemSustainedInventory {
 
-	@Override
-	@SideOnly(Side.CLIENT)
-	public void registerIcons(IIconRegister register) {}
+    public ItemRobit(Properties properties) {
+        super(() -> EntityRobit.MAX_ENERGY.multiply(0.005), () -> EntityRobit.MAX_ENERGY, properties.rarity(Rarity.RARE));
+    }
 
-	@Override
-	@SideOnly(Side.CLIENT)
-	public void addInformation(ItemStack itemstack, EntityPlayer entityplayer, List list, boolean flag)
-	{
-		super.addInformation(itemstack, entityplayer, list, flag);
+    @Override
+    @OnlyIn(Dist.CLIENT)
+    public void addInformation(@Nonnull ItemStack stack, World world, @Nonnull List<ITextComponent> tooltip, @Nonnull ITooltipFlag flag) {
+        super.addInformation(stack, world, tooltip, flag);
+        tooltip.add(MekanismLang.ROBIT_NAME.translateColored(EnumColor.INDIGO, EnumColor.GRAY, getName(stack)));
+        tooltip.add(MekanismLang.HAS_INVENTORY.translateColored(EnumColor.AQUA, EnumColor.GRAY, YesNo.of(hasInventory(stack))));
+    }
 
-		list.add(EnumColor.INDIGO + MekanismUtils.localize("tooltip.name") + ": " + EnumColor.GREY + getName(itemstack));
-		list.add(EnumColor.AQUA + MekanismUtils.localize("tooltip.inventory") + ": " + EnumColor.GREY + (getInventory(itemstack) != null && getInventory(itemstack).tagCount() != 0));
-	}
+    @Nonnull
+    @Override
+    public ActionResultType onItemUse(ItemUseContext context) {
+        PlayerEntity player = context.getPlayer();
+        if (player == null) {
+            return ActionResultType.PASS;
+        }
+        World world = context.getWorld();
+        BlockPos pos = context.getPos();
+        TileEntityMekanism chargepad = MekanismUtils.getTileEntity(TileEntityChargepad.class, world, pos);
+        if (chargepad != null) {
+            if (!chargepad.getActive()) {
+                Hand hand = context.getHand();
+                ItemStack stack = player.getHeldItem(hand);
+                if (!world.isRemote) {
+                    EntityRobit robit = new EntityRobit(world, pos.getX() + 0.5, pos.getY() + 0.1, pos.getZ() + 0.5);
+                    robit.setHome(Coord4D.get(chargepad));
+                    IEnergyContainer energyContainer = StorageUtils.getEnergyContainer(stack, 0);
+                    if (energyContainer != null) {
+                        robit.getEnergyContainer().setEnergy(energyContainer.getEnergy());
+                    }
+                    robit.setOwnerUUID(player.getUniqueID());
+                    robit.setInventory(getInventory(stack));
+                    robit.setCustomName(getName(stack));
+                    world.addEntity(robit);
+                }
+                player.setHeldItem(hand, ItemStack.EMPTY);
+                return ActionResultType.SUCCESS;
+            }
+        }
+        return ActionResultType.PASS;
+    }
 
-	@Override
-	public boolean onItemUse(ItemStack itemstack, EntityPlayer entityplayer, World world, int x, int y, int z, int side, float posX, float posY, float posZ)
-	{
-		TileEntity tileEntity = world.getTileEntity(x, y, z);
+    public void setName(ItemStack stack, ITextComponent name) {
+        ItemDataUtils.setString(stack, NBTConstants.NAME, ITextComponent.Serializer.toJson(name));
+    }
 
-		if(tileEntity instanceof TileEntityChargepad)
-		{
-			TileEntityChargepad chargepad = (TileEntityChargepad)tileEntity;
-			if(!chargepad.isActive)
-			{
-				if(!world.isRemote)
-				{
-					EntityRobit robit = new EntityRobit(world, x+0.5, y+0.1, z+0.5);
-
-					robit.setHome(Coord4D.get(chargepad));
-					robit.setEnergy(getEnergy(itemstack));
-					robit.setOwner(entityplayer.getCommandSenderName());
-					robit.setInventory(getInventory(itemstack));
-					robit.setName(getName(itemstack));
-
-					world.spawnEntityInWorld(robit);
-				}
-
-				entityplayer.setCurrentItemOrArmor(0, null);
-
-				return true;
-			}
-		}
-
-		return false;
-	}
-
-	@Override
-	public boolean canSend(ItemStack itemStack)
-	{
-		return false;
-	}
-
-	public void setName(ItemStack itemstack, String name)
-	{
-		if(itemstack.stackTagCompound == null)
-		{
-			itemstack.setTagCompound(new NBTTagCompound());
-		}
-
-		itemstack.stackTagCompound.setString("name", name);
-	}
-
-	public String getName(ItemStack itemstack)
-	{
-		if(itemstack.stackTagCompound == null)
-		{
-			return "Robit";
-		}
-
-		String name = itemstack.stackTagCompound.getString("name");
-
-		return name.equals("") ? "Robit" : name;
-	}
-
-	@Override
-	public void setInventory(NBTTagList nbtTags, Object... data)
-	{
-		if(data[0] instanceof ItemStack)
-		{
-			ItemStack itemStack = (ItemStack)data[0];
-
-			if(itemStack.stackTagCompound == null)
-			{
-				itemStack.setTagCompound(new NBTTagCompound());
-			}
-
-			itemStack.stackTagCompound.setTag("Items", nbtTags);
-		}
-	}
-
-	@Override
-	public NBTTagList getInventory(Object... data)
-	{
-		if(data[0] instanceof ItemStack)
-		{
-			ItemStack itemStack = (ItemStack)data[0];
-
-			if(itemStack.stackTagCompound == null)
-			{
-				return null;
-			}
-
-			return itemStack.stackTagCompound.getTagList("Items", 10);
-		}
-
-		return null;
-	}
+    public ITextComponent getName(ItemStack stack) {
+        String name = ItemDataUtils.getString(stack, NBTConstants.NAME);
+        return name.isEmpty() ? MekanismLang.ROBIT.translate() : ITextComponent.Serializer.getComponentFromJson(name);
+    }
 }

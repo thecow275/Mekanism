@@ -1,370 +1,295 @@
 package mekanism.client.sound;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.net.URL;
-import java.security.CodeSource;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
+import java.util.EnumMap;
 import java.util.Map;
-import java.util.Random;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-
-import mekanism.api.Coord4D;
-import mekanism.client.HolidayManager;
-import mekanism.client.MekanismClient;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import javax.annotation.Nonnull;
+import mekanism.api.Upgrade;
+import mekanism.client.sound.PlayerSound.SoundType;
 import mekanism.common.Mekanism;
-import mekanism.common.ObfuscatedNames;
+import mekanism.common.config.MekanismConfig;
+import mekanism.common.lib.radiation.RadiationManager.RadiationScale;
+import mekanism.common.tile.interfaces.ITileSound;
+import mekanism.common.tile.interfaces.IUpgradeTile;
 import mekanism.common.util.MekanismUtils;
-
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.audio.PositionedSoundRecord;
-import net.minecraft.client.audio.SoundCategory;
-import net.minecraft.client.audio.SoundManager;
+import net.minecraft.client.audio.ISound;
+import net.minecraft.client.audio.SimpleSound;
+import net.minecraft.client.audio.SoundEngine;
+import net.minecraft.client.audio.TickableSound;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.ResourceLocation;
-import net.minecraft.world.World;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.world.ChunkEvent;
-import cpw.mods.fml.client.FMLClientHandler;
-import cpw.mods.fml.common.eventhandler.SubscribeEvent;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraft.util.SoundCategory;
+import net.minecraft.util.SoundEvent;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.IWorld;
+import net.minecraftforge.client.ForgeHooksClient;
+import net.minecraftforge.client.event.sound.PlaySoundEvent;
+import net.minecraftforge.client.event.sound.SoundSetupEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 
-import paulscode.sound.SoundSystem;
+// SoundHandler is the central point for sounds on Mek client side. There are roughly three classes of sounds to deal
+// with:
+// 1. One-shot sounds like GUI interactions; play the sound and done
+//
+// 2. Long-lived player item sounds (such as jetpacks): long-running sounds that may flip on/off quickly based
+//    on user action. We follow the minecart model for these sounds; starting a sound and then muting when not in use.
+//
+// 3. Tile entity sounds: long-running, repeating sounds that run while a fixed tile is active. These are sounds that
+//    users want to be able to mute effectively.
+//
+// All sounds, when initially started can be intercepted on the Forge event bus and wrapped by various muting/manipulation
+// mods. For item sounds, we don't want to them to be manipulated, since the flipping on/off is too prone to weird timing
+// issues. For long-running sounds, we need a way to honor these attempted manipulations, without allowing them to become
+// the permanent state of the sound (which is what happens by default). To accomplish this, we have our own wrapper that
+// intercepts new repeating sounds from Mek and ensures that they periodically poll for any muting/manipulation so that
+// it the object can dynamically adjust to conditions.
 
 /**
- * SoundHandler - a class that handles all Sounds used by Mekanism.
- * Runs off of PaulsCode's SoundSystem.
- * @author AidanBrady
- *
+ * Only used by client
  */
-@SideOnly(Side.CLIENT)
-public class SoundHandler
-{
-	/** All the sound references in the Minecraft game. */
-	public Map<Object, Sound> sounds = Collections.synchronizedMap(new HashMap<Object, Sound>());
+public class SoundHandler {
 
-	public static Minecraft mc = Minecraft.getMinecraft();
+    private SoundHandler() {
+    }
 
-	/**
-	 * SoundHandler -- a class that handles all Sounds used by Mekanism.
-	 */
-	public SoundHandler()
-	{
-		MinecraftForge.EVENT_BUS.register(this);
+    private static final Set<UUID> jetpackSounds = new ObjectOpenHashSet<>();
+    private static final Set<UUID> scubaMaskSounds = new ObjectOpenHashSet<>();
+    private static final Set<UUID> flamethrowerSounds = new ObjectOpenHashSet<>();
+    private static final Set<UUID> gravitationalModulationSounds = new ObjectOpenHashSet<>();
+    public static final Map<RadiationScale, GeigerSound> radiationSoundMap = new EnumMap<>(RadiationScale.class);
 
-		Mekanism.logger.info("Successfully set up SoundHandler.");
-	}
+    private static final Long2ObjectMap<ISound> soundMap = new Long2ObjectOpenHashMap<>();
+    private static boolean IN_MUFFLED_CHECK = false;
+    private static SoundEngine soundEngine;
 
-	public void preloadSounds()
-	{
-		CodeSource src = getClass().getProtectionDomain().getCodeSource();
-		String corePath = src.getLocation().getFile().split("/mekanism/client")[0];
-		List<String> listings = listFiles(corePath.replace("%20", " ").replace(".jar!", ".jar").replace("file:", ""), "assets/mekanism/sounds");
+    public static void clearPlayerSounds() {
+        jetpackSounds.clear();
+        scubaMaskSounds.clear();
+        flamethrowerSounds.clear();
+        gravitationalModulationSounds.clear();
+    }
 
-		for(String s : listings)
-		{
-			if(s.contains("etc") || s.contains("holiday"))
-			{
-				continue;
-			}
+    public static void clearPlayerSounds(UUID uuid) {
+        jetpackSounds.remove(uuid);
+        scubaMaskSounds.remove(uuid);
+        flamethrowerSounds.remove(uuid);
+        gravitationalModulationSounds.remove(uuid);
+    }
 
-			if(s.contains("/mekanism/sounds/"))
-			{
-				s = s.split("/mekanism/sounds/")[1];
-			}
+    public static void startSound(@Nonnull IWorld world, @Nonnull UUID uuid, @Nonnull SoundType soundType) {
+        switch (soundType) {
+            case JETPACK:
+                if (!jetpackSounds.contains(uuid)) {
+                    PlayerEntity player = world.getPlayerByUuid(uuid);
+                    if (player != null) {
+                        jetpackSounds.add(uuid);
+                        playSound(new JetpackSound(player));
+                    }
+                }
+                break;
+            case SCUBA_MASK:
+                if (!scubaMaskSounds.contains(uuid)) {
+                    PlayerEntity player = world.getPlayerByUuid(uuid);
+                    if (player != null) {
+                        scubaMaskSounds.add(uuid);
+                        playSound(new ScubaMaskSound(player));
+                    }
+                }
+                break;
+            case FLAMETHROWER:
+                if (!flamethrowerSounds.contains(uuid)) {
+                    PlayerEntity player = world.getPlayerByUuid(uuid);
+                    if (player != null) {
+                        flamethrowerSounds.add(uuid);
+                        //TODO: Evaluate at some point if there is a better way to do this
+                        // Currently it requests both play, except only one can ever play at once due to the shouldPlaySound method
+                        playSound(new FlamethrowerSound.Active(player));
+                        playSound(new FlamethrowerSound.Idle(player));
+                    }
+                }
+                break;
+            case GRAVITATIONAL_MODULATOR:
+                if (!gravitationalModulationSounds.contains(uuid)) {
+                    PlayerEntity player = world.getPlayerByUuid(uuid);
+                    if (player != null) {
+                        gravitationalModulationSounds.add(uuid);
+                        playSound(new GravitationalModulationSound(player));
+                    }
+                }
+                break;
+        }
+    }
 
-			preloadSound(s);
-		}
+    public static void playSound(SoundEvent sound) {
+        playSound(SimpleSound.master(sound, 1, MekanismConfig.client.baseSoundVolume.get()));
+    }
 
-		Mekanism.logger.info("Preloaded " + listings.size() + " object sounds.");
+    public static void playSound(ISound sound) {
+        Minecraft.getInstance().getSoundHandler().play(sound);
+    }
 
-		if(MekanismClient.holidays)
-		{
-			listings = listFiles(corePath.replace("%20", " ").replace(".jar!", ".jar").replace("file:", ""), "assets/mekanism/sounds/holiday");
+    public static ISound startTileSound(SoundEvent soundEvent, SoundCategory category, float volume, BlockPos pos) {
+        // First, check to see if there's already a sound playing at the desired location
+        ISound s = soundMap.get(pos.toLong());
+        if (s == null || !Minecraft.getInstance().getSoundHandler().isPlaying(s)) {
+            // No sound playing, start one up - we assume that tile sounds will play until explicitly stopped
+            // The TileTickableSound will then periodically poll to see if the volume should be adjusted
+            s = new TileTickableSound(soundEvent, category, pos, volume);
 
-			for(String s : listings)
-			{
-				if(s.contains("/mekanism/sounds/"))
-				{
-					s = s.split("/mekanism/sounds/")[1];
-				}
+            // Start the sound
+            playSound(s);
 
-				if(!s.contains("holiday"))
-				{
-					s = "holiday/" + s;
-				}
+            // N.B. By the time playSound returns, our expectation is that our wrapping-detector handler has fired
+            // and dealt with any muting interceptions and, CRITICALLY, updated the soundMap with the final ISound.
+            s = soundMap.get(pos.toLong());
+        }
+        return s;
+    }
 
-				preloadSound(s);
-			}
-		}
-	}
+    public static void stopTileSound(BlockPos pos) {
+        long posKey = pos.toLong();
+        ISound s = soundMap.get(posKey);
+        if (s != null) {
+            // TODO: Saw some code that suggests there is a soundMap MC already tracks; investigate further
+            // and maybe we can avoid this dedicated soundMap
+            Minecraft.getInstance().getSoundHandler().stop(s);
+            soundMap.remove(posKey);
+        }
+    }
 
-	private List<String> listFiles(String path, String s)
-	{
-		List<String> names = new ArrayList<String>();
+    @SubscribeEvent
+    public static void onSoundEngineSetup(SoundSetupEvent event) {
+        //Grab the sound engine, so that we are able to play sounds. We use this event rather than requiring the use of an AT
+        if (soundEngine == null) {
+            //Note: We include a null check as the constructor for SoundEngine is public and calls this event
+            // And we do not want to end up grabbing a modders variant of this
+            soundEngine = event.getManager();
+        }
+    }
 
-		File f = new File(path);
+    @SubscribeEvent(priority = EventPriority.LOWEST)
+    public static void onTilePlaySound(PlaySoundEvent event) {
+        // Ignore any sound event which is null or is happening in a muffled check
+        ISound resultSound = event.getResultSound();
+        if (resultSound == null || IN_MUFFLED_CHECK) {
+            return;
+        }
 
-		if(!f.exists())
-		{
-			return names;
-		}
+        // Ignore any sound event outside this mod namespace
+        ResourceLocation soundLoc = event.getSound().getSoundLocation();
+        //If it is mekanism or one of the sub modules let continue
+        if (!soundLoc.getNamespace().startsWith(Mekanism.MODID)) {
+            return;
+        }
 
-		if(!f.isDirectory())
-		{
-			try {
-				ZipInputStream zip = new ZipInputStream(new FileInputStream(path));
+        // If this is a Mek player sound, unwrap any muffling that other mods may have attempted. I haven't
+        // sorted out a good way to deal with long-lived, non-repeating, dynamic volume sounds -- something
+        // to investigate in the future.
+        if (event.getSound() instanceof PlayerSound) {
+            event.setResultSound(event.getSound());
+            return;
+        }
 
-				while(true)
-				{
-					ZipEntry e = zip.getNextEntry();
+        //Ignore any non-tile Mek sounds
+        if (event.getName().startsWith("tile.")) {
+            //At this point, we've got a known block Mekanism sound.
+            // Update our soundMap so that we can actually have a shot at stopping this sound; note that we also
+            // need to "unoffset" the sound position so that we build the correct key for the sound map
+            // Aside: I really, really, wish Forge returned the final result sound as part of playSound :/
+            BlockPos pos = new BlockPos(resultSound.getX() - 0.5, resultSound.getY() - 0.5, resultSound.getZ() - 0.5);
+            soundMap.put(pos.toLong(), resultSound);
+        }
+    }
 
-					if(e == null)
-					{
-						break;
-					}
+    private static class TileTickableSound extends TickableSound {
 
-					String name = e.getName();
+        private final float originalVolume;
 
-					if(name.contains(s) && name.endsWith(".ogg"))
-					{
-						names.add(name);
-					}
-				}
+        // Choose an interval between 60-80 ticks (3-4 seconds) to check for muffling changes. We do this
+        // to ensure that not every tile sound tries to run on the same tick and thus create
+        // uneven spikes of CPU usage
+        private final int checkInterval = 20 + ThreadLocalRandom.current().nextInt(20);
 
-				zip.close();
-			} catch(Exception e) {
-				e.printStackTrace();
-			}
-		}
-		else {
-			f = new File(path + "/" + s);
+        TileTickableSound(SoundEvent soundEvent, SoundCategory category, BlockPos pos, float volume) {
+            super(soundEvent, category);
+            //Keep track of our original volume
+            this.originalVolume = volume * MekanismConfig.client.baseSoundVolume.get();
+            this.x = pos.getX() + 0.5F;
+            this.y = pos.getY() + 0.5F;
+            this.z = pos.getZ() + 0.5F;
+            //Hold off on setting volume until after we set the position
+            this.volume = this.originalVolume * getTileVolumeFactor();
+            this.repeat = true;
+            this.repeatDelay = 0;
+        }
 
-			for(File file : f.listFiles())
-			{
-				if(file.getPath().contains(s) && file.getName().endsWith(".ogg"))
-				{
-					names.add(file.getName());
-				}
-			}
-		}
+        @Override
+        public void tick() {
+            // Every configured interval, see if we need to adjust muffling
+            if (Minecraft.getInstance().world.getGameTime() % checkInterval == 0) {
+                // Run the event bus with the original sound. Note that we must making sure to set the GLOBAL/STATIC
+                // flag that ensures we don't wrap already muffled sounds. This is...NOT ideal and makes some
+                // significant (hopefully well-informed) assumptions about locking/ordering of all these calls.
+                IN_MUFFLED_CHECK = true;
+                //Make sure we set our volume back to what it actually would be for purposes of letting other mods know
+                // what volume to use
+                volume = originalVolume;
+                ISound s = ForgeHooksClient.playSound(soundEngine, this);
+                IN_MUFFLED_CHECK = false;
 
-		return names;
-	}
+                if (s == this) {
+                    // No filtering done, use the original sound's volume
+                    volume = originalVolume * getTileVolumeFactor();
+                } else if (s == null) {
+                    // Full on mute; go ahead and shutdown
+                    finishPlaying();
+                } else {
+                    // Altered sound returned; adjust volume
+                    volume = s.getVolume() * getTileVolumeFactor();
+                }
+            }
+        }
 
-	private void preloadSound(String sound)
-	{
-		String id = "pre_" + sound;
-		URL url = getClass().getClassLoader().getResource("assets/mekanism/sounds/" + sound);
+        private float getTileVolumeFactor() {
+            // Pull the TE from the sound position and see if supports muffling upgrades. If it does, calculate what
+            // percentage of the original volume should be muted
+            TileEntity tile = MekanismUtils.getTileEntity(Minecraft.getInstance().world, new BlockPos(getX(), getY(), getZ()));
+            float retVolume = 1.0F;
 
-		if(getSoundSystem() != null)
-		{
-			getSoundSystem().newSource(false, id, url, sound, true, 0, 0, 0, 0, 16F);
-			getSoundSystem().activate(id);
-			getSoundSystem().removeSource(id);
-		}
-	}
+            if (tile instanceof IUpgradeTile) {
+                IUpgradeTile upgradeTile = (IUpgradeTile) tile;
+                if (upgradeTile.supportsUpgrades() && upgradeTile.getComponent().supports(Upgrade.MUFFLING)) {
+                    int mufflerCount = upgradeTile.getComponent().getUpgrades(Upgrade.MUFFLING);
+                    retVolume = 1.0F - (mufflerCount / (float) Upgrade.MUFFLING.getMax());
+                }
+            }
 
-	/**
-	 * Ticks the sound handler.  Should be called every Minecraft tick, or 20 times per second.
-	 */
-	public void onTick()
-	{
-		synchronized(sounds)
-		{
-			if(getSoundSystem() != null)
-			{
-				if(!Mekanism.proxy.isPaused())
-				{
-					ArrayList<Sound> soundsToRemove = new ArrayList<Sound>();
-					World world = FMLClientHandler.instance().getClient().theWorld;
+            if (tile instanceof ITileSound) {
+                retVolume *= ((ITileSound) tile).getVolume();
+            }
 
-					for(Sound sound : sounds.values())
-					{
-						if(FMLClientHandler.instance().getClient().thePlayer != null && world != null)
-						{
-							if(!sound.update(world))
-							{
-								soundsToRemove.add(sound);
-								continue;
-							}
-						}
-					}
+            return retVolume;
+        }
 
-					for(Sound sound : soundsToRemove)
-					{
-						sound.remove();
-					}
+        @Override
+        public float getVolume() {
+            if (this.sound == null) {
+                this.createAccessor(Minecraft.getInstance().getSoundHandler());
+            }
+            return super.getVolume();
+        }
 
-					for(Sound sound : sounds.values())
-					{
-						if(sound.isPlaying)
-						{
-							sound.updateVolume();
-						}
-					}
-				}
-				else {
-					for(Sound sound : sounds.values())
-					{
-						if(sound.isPlaying)
-						{
-							sound.stopLoop();
-						}
-					}
-				}
-			}
-			else {
-				Mekanism.proxy.unloadSoundHandler();
-			}
-		}
-	}
-
-	/**
-	 * Gets a sound object from a specific TileEntity, null if there is none.
-	 * @param tileEntity - the holder of the sound
-	 * @return Sound instance
-	 */
-	public Sound getFrom(Object obj)
-	{
-		synchronized(sounds)
-		{
-			return sounds.get(obj);
-		}
-	}
-
-	/**
-	 * Create and return an instance of a Sound.
-	 * @param tileEntity - the holder of this sound.
-	 * @return Sound instance
-	 */
-	public void register(Object obj)
-	{
-		if(obj instanceof TileEntity && !(obj instanceof IHasSound))
-		{
-			return;
-		}
-
-		synchronized(sounds)
-		{
-			if(getFrom(obj) == null)
-			{
-				if(obj instanceof TileEntity)
-				{
-					new TileSound(getIdentifier(), HolidayManager.filterSound(((IHasSound)obj).getSoundPath()), (TileEntity)obj);
-				}
-			}
-		}
-	}
-
-	/**
-	 * Get a unique identifier for a sound effect instance by combining the mod's name,
-	 * Mekanism, the new sound's unique position on the 'sounds' ArrayList, and a random
-	 * number between 0 and 10,000. Example: "Mekanism_6_6123"
-	 * @return unique identifier
-	 */
-	public String getIdentifier()
-	{
-		synchronized(sounds)
-		{
-			String toReturn = "Mekanism_" + sounds.size() + "_" + new Random().nextInt(10000);
-
-			for(Sound sound : sounds.values())
-			{
-				if(sound.identifier.equals(toReturn))
-				{
-					return getIdentifier();
-				}
-			}
-
-			return toReturn;
-		}
-	}
-
-	/**
-	 * Plays a sound in a specific location.
-	 * @param soundPath - sound path to play
-	 * @param world - world to play in
-	 * @param object - location to play
-	 */
-	public void quickPlay(String soundPath, World world, Coord4D object)
-	{
-		URL url = getClass().getClassLoader().getResource("assets/mekanism/sounds/" + soundPath);
-
-		if(url == null)
-		{
-			Mekanism.logger.info("Invalid sound file: " + soundPath);
-		}
-
-		String s = getSoundSystem().quickPlay(false, url, soundPath, false, object.xCoord, object.yCoord, object.zCoord, 0, 16F);
-		getSoundSystem().setVolume(s, getMasterVolume());
-	}
-	
-	public float getMasterVolume()
-	{
-		return FMLClientHandler.instance().getClient().gameSettings.getSoundLevel(SoundCategory.MASTER);
-	}
-
-	public static SoundSystem getSoundSystem()
-	{
-		try {
-			return (SoundSystem)MekanismUtils.getPrivateValue(getSoundManager(), SoundManager.class, ObfuscatedNames.SoundManager_sndSystem);
-		} catch(Exception e) {
-			return null;
-		}
-	}
-	
-	public static SoundManager getSoundManager()
-	{
-		try {
-			return (SoundManager)MekanismUtils.getPrivateValue(mc.getSoundHandler(), net.minecraft.client.audio.SoundHandler.class, ObfuscatedNames.SoundHandler_sndManager);
-		} catch(Exception e) {
-			return null;
-		}
-	}
-	
-	public static boolean isSystemLoaded()
-	{
-		try {
-			return (Boolean)MekanismUtils.getPrivateValue(getSoundManager(), net.minecraft.client.audio.SoundManager.class, new String[] {"loaded"});
-		} catch(Exception e) {
-			return false;
-		}
-	}
-	
-	public static void playSound(String sound)
-	{
-        mc.getSoundHandler().playSound(PositionedSoundRecord.func_147674_a(new ResourceLocation(sound), 1.0F));
-	}
-
-	@SubscribeEvent
-	public void onChunkUnload(ChunkEvent.Unload event)
-	{
-		if(event.getChunk() != null)
-		{
-			for(Object obj : event.getChunk().chunkTileEntityMap.values())
-			{
-				if(obj instanceof TileEntity)
-				{
-					TileEntity tileEntity = (TileEntity)obj;
-
-					if(tileEntity instanceof IHasSound)
-					{
-						if(getFrom(tileEntity) != null)
-						{
-							if(sounds.containsKey(tileEntity))
-							{
-								getFrom(tileEntity).remove();
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+        @Override
+        public boolean canBeSilent() {
+            return true;
+        }
+    }
 }

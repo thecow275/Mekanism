@@ -1,68 +1,65 @@
 package mekanism.client;
 
-import mekanism.api.MekanismAPI;
-import mekanism.api.MekanismAPI.BoxBlacklistEvent;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import java.util.Map;
+import java.util.UUID;
+import mekanism.client.render.RenderTickHandler;
+import mekanism.client.render.tileentity.RenderSPS;
 import mekanism.client.sound.SoundHandler;
-import mekanism.client.voice.VoiceClient;
 import mekanism.common.Mekanism;
-import mekanism.common.network.PacketKey.KeyMessage;
-
+import mekanism.common.base.IModule;
+import mekanism.common.lib.security.SecurityData;
+import mekanism.common.lib.transmitter.TransmitterNetworkRegistry;
+import mekanism.common.network.PacketKey;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
-import net.minecraftforge.common.MinecraftForge;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
 
-public class MekanismClient extends Mekanism
-{
-	@SideOnly(Side.CLIENT)
-	/** The main SoundHandler instance that is used by all audio sources */
-	public static SoundHandler audioHandler;
+public class MekanismClient {
 
-	public static VoiceClient voiceClient;
+    private MekanismClient() {
+    }
 
-	//General Configuration
-	public static boolean enableSounds = true;
-	public static boolean fancyUniversalCableRender = true;
-	public static boolean holidays = true;
-	public static double baseSoundVolume = 1;
+    public static final Map<UUID, SecurityData> clientSecurityMap = new Object2ObjectOpenHashMap<>();
+    public static final Map<UUID, String> clientUUIDMap = new Object2ObjectOpenHashMap<>();
+    public static boolean renderHUD = true;
 
-	public static long ticksPassed = 0;
+    public static long ticksPassed = 0;
 
-	public static void updateKey(KeyBinding key, int type)
-	{
-		boolean down = Minecraft.getMinecraft().currentScreen == null ? key.getIsKeyPressed() : false;
+    public static void updateKey(KeyBinding key, int type) {
+        boolean down = Minecraft.getInstance().currentScreen == null && key.isKeyDown();
+        if (Minecraft.getInstance().player != null) {
+            UUID playerUUID = Minecraft.getInstance().player.getUniqueID();
+            if (down != Mekanism.keyMap.has(playerUUID, type)) {
+                Mekanism.packetHandler.sendToServer(new PacketKey(type, down));
+                Mekanism.keyMap.update(playerUUID, type, down);
+            }
+        }
+    }
 
-		if(down != keyMap.has(Minecraft.getMinecraft().thePlayer, type))
-		{
-			Mekanism.packetHandler.sendToServer(new KeyMessage(type, down));
-			keyMap.update(Minecraft.getMinecraft().thePlayer, type, down);
-		}
-	}
+    public static void reset() {
+        clientSecurityMap.clear();
+        clientUUIDMap.clear();
 
-	public static void reset()
-	{
-		if(Mekanism.voiceServerEnabled)
-		{
-			if(MekanismClient.voiceClient != null)
-			{
-				MekanismClient.voiceClient.disconnect();
-				MekanismClient.voiceClient = null;
-			}
-		}
+        ClientTickHandler.portableTeleports.clear();
+        ClientTickHandler.firstTick = true;
+        ClientTickHandler.visionEnhancement = false;
 
-		ClientTickHandler.tickingSet.clear();
-		Mekanism.proxy.unloadSoundHandler();
+        Mekanism.playerState.clear();
+        Mekanism.activeVibrators.clear();
+        Mekanism.radiationManager.resetClient();
+        SoundHandler.radiationSoundMap.clear();
+        RenderSPS.clearBoltRenderers();
+        TransmitterNetworkRegistry.getInstance().clearClientNetworks();
+        RenderTickHandler.prevRadiation = 0;
 
-		MekanismAPI.getBoxIgnore().clear();
-		MinecraftForge.EVENT_BUS.post(new BoxBlacklistEvent());
+        for (IModule module : Mekanism.modulesLoaded) {
+            module.resetClient();
+        }
+    }
 
-		Mekanism.jetpackOn.clear();
-		Mekanism.gasmaskOn.clear();
-		Mekanism.activeVibrators.clear();
-
-		Mekanism.proxy.loadConfiguration();
-
-		Mekanism.logger.info("Reloaded config.");
-	}
+    public static void launchClient() {
+        for (IModule module : Mekanism.modulesLoaded) {
+            module.launchClient();
+        }
+    }
 }

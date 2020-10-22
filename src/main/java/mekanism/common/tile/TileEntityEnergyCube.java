@@ -1,280 +1,175 @@
 package mekanism.common.tile;
 
-import java.util.ArrayList;
-import java.util.EnumSet;
-
-import mekanism.api.Coord4D;
-import mekanism.api.Range4D;
-import mekanism.common.IRedstoneControl;
-import mekanism.common.Mekanism;
-import mekanism.common.PacketHandler;
-import mekanism.common.Tier.EnergyCubeTier;
-import mekanism.common.network.PacketTileEntity.TileEntityMessage;
+import javax.annotation.Nonnull;
+import mekanism.api.IConfigCardAccess;
+import mekanism.api.NBTConstants;
+import mekanism.api.RelativeSide;
+import mekanism.api.providers.IBlockProvider;
+import mekanism.common.block.attribute.Attribute;
+import mekanism.common.capabilities.Capabilities;
+import mekanism.common.capabilities.energy.EnergyCubeEnergyContainer;
+import mekanism.common.capabilities.holder.energy.EnergyContainerHelper;
+import mekanism.common.capabilities.holder.energy.IEnergyContainerHolder;
+import mekanism.common.capabilities.holder.slot.IInventorySlotHolder;
+import mekanism.common.capabilities.holder.slot.InventorySlotHelper;
+import mekanism.common.capabilities.resolver.basic.BasicCapabilityResolver;
+import mekanism.common.inventory.container.slot.SlotOverlay;
+import mekanism.common.inventory.slot.EnergyInventorySlot;
+import mekanism.common.lib.transmitter.TransmissionType;
+import mekanism.common.tier.EnergyCubeTier;
+import mekanism.common.tile.base.TileEntityMekanism;
+import mekanism.common.tile.component.ITileComponent;
+import mekanism.common.tile.component.TileComponentConfig;
+import mekanism.common.tile.component.TileComponentEjector;
+import mekanism.common.tile.component.config.ConfigInfo;
+import mekanism.common.tile.interfaces.ISideConfiguration;
+import mekanism.common.upgrade.EnergyCubeUpgradeData;
+import mekanism.common.upgrade.IUpgradeData;
 import mekanism.common.util.CableUtils;
-import mekanism.common.util.ChargeUtils;
 import mekanism.common.util.MekanismUtils;
+import mekanism.common.util.NBTUtils;
+import net.minecraft.block.BlockState;
+import net.minecraft.nbt.CompoundNBT;
+import net.minecraft.util.Direction;
 
-import net.minecraft.item.ItemStack;
-import net.minecraft.nbt.NBTTagCompound;
-import net.minecraft.util.MathHelper;
-import net.minecraftforge.common.util.ForgeDirection;
-import cpw.mods.fml.common.Optional.Interface;
-import cpw.mods.fml.common.Optional.Method;
+public class TileEntityEnergyCube extends TileEntityMekanism implements ISideConfiguration, IConfigCardAccess {
 
-import io.netty.buffer.ByteBuf;
+    /**
+     * This Energy Cube's tier.
+     */
+    private EnergyCubeTier tier;
+    private float prevScale;
+    public final TileComponentEjector ejectorComponent;
+    public final TileComponentConfig configComponent;
 
-import dan200.computercraft.api.lua.ILuaContext;
-import dan200.computercraft.api.lua.LuaException;
-import dan200.computercraft.api.peripheral.IComputerAccess;
-import dan200.computercraft.api.peripheral.IPeripheral;
+    private EnergyCubeEnergyContainer energyContainer;
+    private EnergyInventorySlot chargeSlot;
+    private EnergyInventorySlot dischargeSlot;
 
-@Interface(iface = "dan200.computercraft.api.peripheral.IPeripheral", modid = "ComputerCraft")
-public class TileEntityEnergyCube extends TileEntityElectricBlock implements IPeripheral, IRedstoneControl
-{
-	/** This Energy Cube's tier. */
-	public EnergyCubeTier tier = EnergyCubeTier.BASIC;
+    /**
+     * A block used to store and transfer electricity.
+     */
+    public TileEntityEnergyCube(IBlockProvider blockProvider) {
+        super(blockProvider);
 
-	/** The redstone level this Energy Cube is outputting at. */
-	public int currentRedstoneLevel;
+        configComponent = new TileComponentConfig(this, TransmissionType.ENERGY, TransmissionType.ITEM);
+        configComponent.setupIOConfig(TransmissionType.ITEM, chargeSlot, dischargeSlot, RelativeSide.FRONT, true)
+              .setCanEject(false);
+        configComponent.setupIOConfig(TransmissionType.ENERGY, energyContainer, energyContainer, RelativeSide.FRONT)
+              .setEjecting(true);
 
-	/** This machine's current RedstoneControl type. */
-	public RedstoneControl controlType;
+        ejectorComponent = new TileComponentEjector(this);
+        addCapabilityResolver(BasicCapabilityResolver.constant(Capabilities.CONFIG_CARD_CAPABILITY, this));
+    }
 
-	public int prevScale;
+    @Override
+    protected void presetVariables() {
+        tier = Attribute.getTier(getBlockType(), EnergyCubeTier.class);
+    }
 
-	/**
-	 * A block used to store and transfer electricity.
-	 */
-	public TileEntityEnergyCube()
-	{
-		super("EnergyCube", 0);
+    @Nonnull
+    @Override
+    protected IEnergyContainerHolder getInitialEnergyContainers() {
+        EnergyContainerHelper builder = EnergyContainerHelper.forSideWithConfig(this::getDirection, this::getConfig);
+        builder.addContainer(energyContainer = EnergyCubeEnergyContainer.create(tier, this));
+        return builder.build();
+    }
 
-		inventory = new ItemStack[2];
-		controlType = RedstoneControl.DISABLED;
-	}
+    @Nonnull
+    @Override
+    protected IInventorySlotHolder getInitialInventory() {
+        InventorySlotHelper builder = InventorySlotHelper.forSideWithConfig(this::getDirection, this::getConfig);
+        builder.addSlot(dischargeSlot = EnergyInventorySlot.fillOrConvert(energyContainer, this::getWorld, this, 17, 35));
+        builder.addSlot(chargeSlot = EnergyInventorySlot.drain(energyContainer, this, 143, 35));
+        dischargeSlot.setSlotOverlay(SlotOverlay.MINUS);
+        chargeSlot.setSlotOverlay(SlotOverlay.PLUS);
+        return builder.build();
+    }
 
-	@Override
-	public void onUpdate()
-	{
-		super.onUpdate();
+    public EnergyCubeTier getTier() {
+        return tier;
+    }
 
-		if(!worldObj.isRemote)
-		{
-			ChargeUtils.charge(0, this);
-			ChargeUtils.discharge(1, this);
-	
-			if(MekanismUtils.canFunction(this))
-			{
-				CableUtils.emit(this);
-			}
-			
-			int newScale = getScaledEnergyLevel(20);
-	
-			if(newScale != prevScale)
-			{
-				Mekanism.packetHandler.sendToReceivers(new TileEntityMessage(Coord4D.get(this), getNetworkedData(new ArrayList())), new Range4D(Coord4D.get(this)));
-			}
-	
-			prevScale = newScale;
-		}
-	}
+    @Override
+    protected void onUpdateServer() {
+        super.onUpdateServer();
+        chargeSlot.drainContainer();
+        dischargeSlot.fillContainerOrConvert();
+        if (!energyContainer.isEmpty() && MekanismUtils.canFunction(this)) {
+            ConfigInfo info = configComponent.getConfig(TransmissionType.ENERGY);
+            if (info != null && info.isEjecting()) {
+                CableUtils.emit(info.getAllOutputtingSides(), energyContainer, this, tier.getOutput());
+            }
+        }
+        float newScale = MekanismUtils.getScale(prevScale, energyContainer);
+        if (newScale != prevScale) {
+            prevScale = newScale;
+            sendUpdatePacket();
+        }
+    }
 
-	@Override
-	public String getInventoryName()
-	{
-		return MekanismUtils.localize(getBlockType().getUnlocalizedName() + "." + tier.name + ".name");
-	}
+    @Override
+    public int getRedstoneLevel() {
+        return MekanismUtils.redstoneLevelFromContents(energyContainer.getEnergy(), energyContainer.getMaxEnergy());
+    }
 
-	@Override
-	public double getMaxOutput()
-	{
-		return tier.OUTPUT;
-	}
+    @Override
+    public TileComponentEjector getEjector() {
+        return ejectorComponent;
+    }
 
-	@Override
-	public boolean isItemValidForSlot(int slotID, ItemStack itemstack)
-	{
-		if(slotID == 0)
-		{
-			return ChargeUtils.canBeCharged(itemstack);
-		}
-		else if(slotID == 1)
-		{
-			return ChargeUtils.canBeDischarged(itemstack);
-		}
+    @Override
+    public TileComponentConfig getConfig() {
+        return configComponent;
+    }
 
-		return true;
-	}
+    @Override
+    public Direction getOrientation() {
+        return getDirection();
+    }
 
-	@Override
-	protected EnumSet<ForgeDirection> getConsumingSides()
-	{
-		EnumSet set = EnumSet.allOf(ForgeDirection.class);
-		set.removeAll(getOutputtingSides());
-		set.remove(ForgeDirection.UNKNOWN);
+    @Override
+    public void parseUpgradeData(@Nonnull IUpgradeData upgradeData) {
+        if (upgradeData instanceof EnergyCubeUpgradeData) {
+            EnergyCubeUpgradeData data = (EnergyCubeUpgradeData) upgradeData;
+            redstone = data.redstone;
+            setControlType(data.controlType);
+            getEnergyContainer().setEnergy(data.energyContainer.getEnergy());
+            chargeSlot.setStack(data.chargeSlot.getStack());
+            dischargeSlot.setStack(data.dischargeSlot.getStack());
+            for (ITileComponent component : getComponents()) {
+                component.read(data.components);
+            }
+        } else {
+            super.parseUpgradeData(upgradeData);
+        }
+    }
 
-		return set;
-	}
+    public EnergyCubeEnergyContainer getEnergyContainer() {
+        return energyContainer;
+    }
 
-	@Override
-	public EnumSet<ForgeDirection> getOutputtingSides()
-	{
-		return EnumSet.of(ForgeDirection.getOrientation(facing));
-	}
+    @Nonnull
+    @Override
+    public EnergyCubeUpgradeData getUpgradeData() {
+        return new EnergyCubeUpgradeData(redstone, getControlType(), getEnergyContainer(), chargeSlot, dischargeSlot, getComponents());
+    }
 
-	@Override
-	public boolean canSetFacing(int side)
-	{
-		return true;
-	}
+    public float getEnergyScale() {
+        return prevScale;
+    }
 
-	@Override
-	public double getMaxEnergy()
-	{
-		return tier.MAX_ELECTRICITY;
-	}
+    @Nonnull
+    @Override
+    public CompoundNBT getReducedUpdateTag() {
+        CompoundNBT updateTag = super.getReducedUpdateTag();
+        updateTag.putFloat(NBTConstants.SCALE, prevScale);
+        return updateTag;
+    }
 
-	@Override
-	public int[] getAccessibleSlotsFromSide(int side)
-	{
-		return side <= 1 ? new int[] {0} : new int[] {1};
-	}
-
-	@Override
-	public boolean canExtractItem(int slotID, ItemStack itemstack, int side)
-	{
-		if(slotID == 1)
-		{
-			return ChargeUtils.canBeOutputted(itemstack, false);
-		}
-		else if(slotID == 0)
-		{
-			return ChargeUtils.canBeOutputted(itemstack, true);
-		}
-
-		return false;
-	}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public String getType()
-	{
-		return getInventoryName();
-	}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public String[] getMethodNames()
-	{
-		return new String[] {"getStored", "getOutput", "getMaxEnergy", "getEnergyNeeded"};
-	}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public Object[] callMethod(IComputerAccess computer, ILuaContext context, int method, Object[] arguments) throws LuaException, InterruptedException
-	{
-		switch(method)
-		{
-			case 0:
-				return new Object[] {getEnergy()};
-			case 1:
-				return new Object[] {tier.OUTPUT};
-			case 2:
-				return new Object[] {getMaxEnergy()};
-			case 3:
-				return new Object[] {(getMaxEnergy()-getEnergy())};
-			default:
-				Mekanism.logger.error("Attempted to call unknown method with computer ID " + computer.getID());
-				return null;
-		}
-	}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public boolean equals(IPeripheral other)
-	{
-		return this == other;
-	}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public void attach(IComputerAccess computer) {}
-
-	@Override
-	@Method(modid = "ComputerCraft")
-	public void detach(IComputerAccess computer) {}
-
-	@Override
-	public void handlePacketData(ByteBuf dataStream)
-	{
-		tier = EnergyCubeTier.getFromName(PacketHandler.readString(dataStream));
-
-		super.handlePacketData(dataStream);
-
-		controlType = RedstoneControl.values()[dataStream.readInt()];
-
-		MekanismUtils.updateBlock(worldObj, xCoord, yCoord, zCoord);
-	}
-
-	@Override
-	public ArrayList getNetworkedData(ArrayList data)
-	{
-		data.add(tier.name);
-
-		super.getNetworkedData(data);
-
-		data.add(controlType.ordinal());
-
-		return data;
-	}
-
-	@Override
-	public void readFromNBT(NBTTagCompound nbtTags)
-	{
-		super.readFromNBT(nbtTags);
-
-		tier = EnergyCubeTier.getFromName(nbtTags.getString("tier"));
-		controlType = RedstoneControl.values()[nbtTags.getInteger("controlType")];
-	}
-
-	@Override
-	public void writeToNBT(NBTTagCompound nbtTags)
-	{
-		super.writeToNBT(nbtTags);
-
-		nbtTags.setString("tier", tier.name);
-		nbtTags.setInteger("controlType", controlType.ordinal());
-	}
-
-	@Override
-	public void setEnergy(double energy)
-	{
-		super.setEnergy(energy);
-
-		int newRedstoneLevel = getRedstoneLevel();
-
-		if(newRedstoneLevel != currentRedstoneLevel)
-		{
-			markDirty();
-			currentRedstoneLevel = newRedstoneLevel;
-		}
-	}
-
-	public int getRedstoneLevel()
-	{
-		double fractionFull = getEnergy()/getMaxEnergy();
-		return MathHelper.floor_float((float)(fractionFull * 14.0F)) + (fractionFull > 0 ? 1 : 0);
-	}
-
-	@Override
-	public RedstoneControl getControlType()
-	{
-		return controlType;
-	}
-
-	@Override
-	public void setControlType(RedstoneControl type)
-	{
-		controlType = type;
-	}
+    @Override
+    public void handleUpdateTag(BlockState state, @Nonnull CompoundNBT tag) {
+        super.handleUpdateTag(state, tag);
+        NBTUtils.setFloatIfPresent(tag, NBTConstants.SCALE, scale -> prevScale = scale);
+    }
 }

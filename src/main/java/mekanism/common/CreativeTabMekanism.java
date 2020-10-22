@@ -1,25 +1,27 @@
 package mekanism.common;
 
-import net.minecraft.creativetab.CreativeTabs;
-import net.minecraft.item.Item;
+import javax.annotation.Nonnull;
+import mekanism.common.registries.MekanismItems;
+import net.minecraft.item.ItemGroup;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.text.ITextComponent;
 
-public class CreativeTabMekanism extends CreativeTabs
-{
-	public CreativeTabMekanism()
-	{
-		super("tabMekanism");
-	}
+public class CreativeTabMekanism extends ItemGroup {
 
-	@Override
-	public ItemStack getIconItemStack()
-	{
-		return new ItemStack(Mekanism.AtomicAlloy);
-	}
+    public CreativeTabMekanism() {
+        super(Mekanism.MODID);
+    }
 
-	@Override
-	public Item getTabIconItem() 
-	{
-		return Mekanism.AtomicAlloy;
-	}
+    @Nonnull
+    @Override
+    public ItemStack createIcon() {
+        return MekanismItems.ATOMIC_ALLOY.getItemStack();
+    }
+
+    @Nonnull
+    @Override
+    public ITextComponent getGroupName() {
+        //Overwrite the lang key to match the one representing Mekanism
+        return MekanismLang.MEKANISM.translate();
+    }
 }

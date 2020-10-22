@@ -1,110 +1,91 @@
 package mekanism.client.gui;
 
-import mekanism.client.render.MekanismRenderer;
-import mekanism.common.inventory.container.ContainerDynamicTank;
-import mekanism.common.tank.TankUpdateProtocol;
-import mekanism.common.tile.TileEntityDynamicTank;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
-
-import net.minecraft.entity.player.InventoryPlayer;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.ToLongFunction;
+import javax.annotation.Nonnull;
+import mekanism.api.chemical.ChemicalStack;
+import mekanism.api.chemical.IChemicalTank;
+import mekanism.client.gui.element.GuiDownArrow;
+import mekanism.client.gui.element.GuiElementHolder;
+import mekanism.client.gui.element.GuiInnerScreen;
+import mekanism.client.gui.element.gauge.GaugeType;
+import mekanism.client.gui.element.gauge.GuiMergedTankGauge;
+import mekanism.client.gui.element.slot.GuiSlot;
+import mekanism.client.gui.element.slot.SlotType;
+import mekanism.client.gui.element.tab.GuiContainerEditModeTab;
+import mekanism.common.MekanismLang;
+import mekanism.common.content.tank.TankMultiblockData;
+import mekanism.common.inventory.container.tile.MekanismTileContainer;
+import mekanism.common.tile.multiblock.TileEntityDynamicTank;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.util.text.ITextComponent;
 import net.minecraftforge.fluids.FluidStack;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
 
-import org.lwjgl.opengl.GL11;
+public class GuiDynamicTank extends GuiMekanismTile<TileEntityDynamicTank, MekanismTileContainer<TileEntityDynamicTank>> {
 
-@SideOnly(Side.CLIENT)
-public class GuiDynamicTank extends GuiMekanism
-{
-	public TileEntityDynamicTank tileEntity;
+    public GuiDynamicTank(MekanismTileContainer<TileEntityDynamicTank> container, PlayerInventory inv, ITextComponent title) {
+        super(container, inv, title);
+        dynamicSlots = true;
+    }
 
-	public GuiDynamicTank(InventoryPlayer inventory, TileEntityDynamicTank tentity)
-	{
-		super(new ContainerDynamicTank(inventory, tentity));
-		tileEntity = tentity;
-		guiElements.add(new GuiContainerEditMode(this, tileEntity, MekanismUtils.getResource(ResourceType.GUI, "GuiDynamicTank.png")));
-	}
+    @Override
+    protected void initPreSlots() {
+        addButton(new GuiElementHolder(this, 141, 16, 26, 56));
+    }
 
-	@Override
-	protected void drawGuiContainerForegroundLayer(int mouseX, int mouseY)
-	{
-		int xAxis = (mouseX - (width - xSize) / 2);
-		int yAxis = (mouseY - (height - ySize) / 2);
+    @Override
+    public void init() {
+        super.init();
+        addButton(new GuiSlot(SlotType.INNER_HOLDER_SLOT, this, 145, 20));
+        addButton(new GuiSlot(SlotType.INNER_HOLDER_SLOT, this, 145, 50));
+        addButton(new GuiInnerScreen(this, 49, 21, 84, 46, () -> {
+            List<ITextComponent> ret = new ArrayList<>();
+            TankMultiblockData multiblock = tile.getMultiblock();
+            switch (multiblock.mergedTank.getCurrentType()) {
+                case EMPTY:
+                    ret.add(MekanismLang.EMPTY.translate());
+                    break;
+                case FLUID:
+                    addStored(ret, multiblock.getFluidTank().getFluid(), FluidStack::getAmount);
+                    break;
+                case GAS:
+                    addStored(ret, multiblock.getGasTank());
+                    break;
+                case INFUSION:
+                    addStored(ret, multiblock.getInfusionTank());
+                    break;
+                case PIGMENT:
+                    addStored(ret, multiblock.getPigmentTank());
+                    break;
+                case SLURRY:
+                    addStored(ret, multiblock.getSlurryTank());
+                    break;
+            }
+            ret.add(MekanismLang.CAPACITY.translate(""));
+            // capacity is the same for the tank no matter what type it is currently stored
+            ret.add(MekanismLang.GENERIC_MB.translate(formatInt(multiblock.getTankCapacity())));
+            return ret;
+        }).defaultFormat().spacing(2));
+        addButton(new GuiDownArrow(this, 150, 39));
+        addButton(new GuiContainerEditModeTab<>(this, tile));
+        addButton(new GuiMergedTankGauge<>(() -> tile.getMultiblock().mergedTank, tile::getMultiblock, GaugeType.MEDIUM, this, 7, 16, 34, 56));
+    }
 
-		fontRendererObj.drawString(tileEntity.getInventoryName(), 45, 6, 0x404040);
-		fontRendererObj.drawString(MekanismUtils.localize("container.inventory"), 8, (ySize - 94) + 2, 0x404040);
-		fontRendererObj.drawString(MekanismUtils.localize("gui.volume") + ": " + tileEntity.clientCapacity/TankUpdateProtocol.FLUID_PER_TANK, 53, 26, 0x00CD00);
-		fontRendererObj.drawString(tileEntity.structure.fluidStored != null ? tileEntity.structure.fluidStored.getFluid().getName() + ":" : MekanismUtils.localize("gui.noFluid"), 53, 44, 0x00CD00);
+    private void addStored(List<ITextComponent> ret, IChemicalTank<?, ?> tank) {
+        addStored(ret, tank.getStack(), ChemicalStack::getAmount);
+    }
 
-		if(tileEntity.structure.fluidStored != null)
-		{
-			fontRendererObj.drawString(tileEntity.structure.fluidStored.amount + "mB", 53, 53, 0x00CD00);
-		}
+    private <STACK> void addStored(List<ITextComponent> ret, STACK stack, ToLongFunction<STACK> amountGetter) {
+        ret.add(MekanismLang.GENERIC_PRE_COLON.translate(stack));
+        ret.add(MekanismLang.GENERIC_MB.translate(formatInt(amountGetter.applyAsLong(stack))));
+    }
 
-		if(xAxis >= 7 && xAxis <= 39 && yAxis >= 14 && yAxis <= 72)
-		{
-			drawCreativeTabHoveringText(tileEntity.structure.fluidStored != null ? tileEntity.structure.fluidStored.getFluid().getLocalizedName() + ": " + tileEntity.structure.fluidStored.amount + "mB" : MekanismUtils.localize("gui.empty"), xAxis, yAxis);
-		}
-
-		super.drawGuiContainerForegroundLayer(mouseX, mouseY);
-	}
-
-	@Override
-	protected void drawGuiContainerBackgroundLayer(float partialTick, int mouseX, int mouseY)
-	{
-		super.drawGuiContainerBackgroundLayer(partialTick, mouseX, mouseY);
-
-		mc.renderEngine.bindTexture(MekanismUtils.getResource(ResourceType.GUI, "GuiDynamicTank.png"));
-		GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
-		int guiWidth = (width - xSize) / 2;
-		int guiHeight = (height - ySize) / 2;
-		drawTexturedModalRect(guiWidth, guiHeight, 0, 0, xSize, ySize);
-
-		if(tileEntity.getScaledFluidLevel(58) > 0)
-		{
-			displayGauge(7, 14, tileEntity.getScaledFluidLevel(58), tileEntity.structure.fluidStored, 0);
-			displayGauge(23, 14, tileEntity.getScaledFluidLevel(58), tileEntity.structure.fluidStored, 1);
-		}
-	}
-
-	public void displayGauge(int xPos, int yPos, int scale, FluidStack fluid, int side /*0-left, 1-right*/)
-	{
-		if(fluid == null)
-		{
-			return;
-		}
-
-		int guiWidth = (width - xSize) / 2;
-		int guiHeight = (height - ySize) / 2;
-
-		int start = 0;
-
-		while(true)
-		{
-			int renderRemaining = 0;
-
-			if(scale > 16)
-			{
-				renderRemaining = 16;
-				scale -= 16;
-			}
-			else {
-				renderRemaining = scale;
-				scale = 0;
-			}
-
-			mc.renderEngine.bindTexture(MekanismRenderer.getBlocksTexture());
-			drawTexturedModelRectFromIcon(guiWidth + xPos, guiHeight + yPos + 58 - renderRemaining - start, fluid.getFluid().getIcon(), 16, 16 - (16 - renderRemaining));
-			start+=16;
-
-			if(renderRemaining == 0 || scale == 0)
-			{
-				break;
-			}
-		}
-
-		mc.renderEngine.bindTexture(MekanismUtils.getResource(ResourceType.GUI, "GuiDynamicTank.png"));
-		drawTexturedModalRect(guiWidth + xPos, guiHeight + yPos, 176, side == 0 ? 0 : 54, 16, 54);
-	}
+    @Override
+    protected void drawForegroundText(@Nonnull MatrixStack matrix, int mouseX, int mouseY) {
+        renderTitleText(matrix);
+        drawString(matrix, MekanismLang.INVENTORY.translate(), 8, (getYSize() - 94) + 2, titleTextColor());
+        super.drawForegroundText(matrix, mouseX, mouseY);
+    }
 }

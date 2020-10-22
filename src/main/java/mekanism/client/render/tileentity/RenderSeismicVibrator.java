@@ -1,67 +1,61 @@
 package mekanism.client.render.tileentity;
 
+import com.mojang.blaze3d.matrix.MatrixStack;
+import com.mojang.blaze3d.vertex.IVertexBuilder;
+import javax.annotation.ParametersAreNonnullByDefault;
 import mekanism.client.model.ModelSeismicVibrator;
-import mekanism.common.Mekanism;
-import mekanism.common.tile.TileEntitySeismicVibrator;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
-
-import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
+import mekanism.client.render.MekanismRenderer;
+import mekanism.common.base.ProfilerConstants;
+import mekanism.common.tile.machine.TileEntitySeismicVibrator;
+import net.minecraft.client.renderer.IRenderTypeBuffer;
+import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
+import net.minecraft.profiler.IProfiler;
 import net.minecraft.tileentity.TileEntity;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraft.util.math.vector.Vector3f;
 
-import org.lwjgl.opengl.GL11;
+@ParametersAreNonnullByDefault
+public class RenderSeismicVibrator extends MekanismTileEntityRenderer<TileEntitySeismicVibrator> implements IWireFrameRenderer {
 
-@SideOnly(Side.CLIENT)
-public class RenderSeismicVibrator extends TileEntitySpecialRenderer
-{
-	private ModelSeismicVibrator model = new ModelSeismicVibrator();
+    private final ModelSeismicVibrator model = new ModelSeismicVibrator();
 
-	@Override
-	public void renderTileEntityAt(TileEntity tileEntity, double x, double y, double z, float partialTick)
-	{
-		renderAModelAt((TileEntitySeismicVibrator)tileEntity, x, y, z, partialTick);
-	}
+    public RenderSeismicVibrator(TileEntityRendererDispatcher renderer) {
+        super(renderer);
+    }
 
-	private void renderAModelAt(TileEntitySeismicVibrator tileEntity, double x, double y, double z, float partialTick)
-	{
-		GL11.glPushMatrix();
-		GL11.glTranslatef((float)x + 0.5F, (float)y + 1.5F, (float)z + 0.5F);
+    @Override
+    protected void render(TileEntitySeismicVibrator tile, float partialTick, MatrixStack matrix, IRenderTypeBuffer renderer, int light, int overlayLight, IProfiler profiler) {
+        float actualRate = performTranslationsAndGetRate(tile, partialTick, matrix);
+        model.render(matrix, renderer, light, overlayLight, actualRate, false);
+        matrix.pop();
+    }
 
-		bindTexture(MekanismUtils.getResource(ResourceType.RENDER, "SeismicVibrator" + (tileEntity.isActive ? "On" : "") + ".png"));
+    @Override
+    protected String getProfilerSection() {
+        return ProfilerConstants.SEISMIC_VIBRATOR;
+    }
 
-		switch(tileEntity.facing)
-		{
-			case 2: GL11.glRotatef(0, 0.0F, 1.0F, 0.0F); break;
-			case 3: GL11.glRotatef(180, 0.0F, 1.0F, 0.0F); break;
-			case 4: GL11.glRotatef(90, 0.0F, 1.0F, 0.0F); break;
-			case 5: GL11.glRotatef(270, 0.0F, 1.0F, 0.0F); break;
-		}
-		
-		if(!Mekanism.proxy.isPaused())
-		{
-			float rate = 0.01F;
-			
-			if(!tileEntity.getActive() && tileEntity.clientPiston > 0)
-			{
-				if(tileEntity.clientPiston < 1)
-				{
-					tileEntity.clientPiston = 1 + (1-tileEntity.clientPiston);
-				}
-				
-				tileEntity.clientPiston = Math.min(2, tileEntity.clientPiston+rate)%2;
-			}
-			else if(tileEntity.getActive())
-			{
-				tileEntity.clientPiston = Math.min(2, tileEntity.clientPiston+rate)%2;
-			}
-		}
-		
-		float actualRate = tileEntity.clientPiston < 1 ? tileEntity.clientPiston : 2-tileEntity.clientPiston;
+    @Override
+    public boolean isGlobalRenderer(TileEntitySeismicVibrator tile) {
+        return true;
+    }
 
-		GL11.glRotatef(180F, 0.0F, 0.0F, 1.0F);
-		model.renderWithPiston(actualRate, 0.0625F);
-		GL11.glPopMatrix();
-	}
+    @Override
+    public void renderWireFrame(TileEntity tile, float partialTick, MatrixStack matrix, IVertexBuilder buffer, float red, float green, float blue, float alpha) {
+        if (tile instanceof TileEntitySeismicVibrator) {
+            float actualRate = performTranslationsAndGetRate((TileEntitySeismicVibrator) tile, partialTick, matrix);
+            model.renderWireFrame(matrix, buffer, actualRate, red, green, blue, alpha);
+            matrix.pop();
+        }
+    }
+
+    /**
+     * Make sure to call matrix.pop afterwards
+     */
+    private float performTranslationsAndGetRate(TileEntitySeismicVibrator tile, float partialTick, MatrixStack matrix) {
+        matrix.push();
+        matrix.translate(0.5, 1.5, 0.5);
+        MekanismRenderer.rotate(matrix, tile.getDirection(), 0, 180, 90, 270);
+        matrix.rotate(Vector3f.ZP.rotationDegrees(180));
+        return Math.max(0, (float) Math.sin((tile.clientPiston + (tile.getActive() ? partialTick : 0)) / 5F));
+    }
 }

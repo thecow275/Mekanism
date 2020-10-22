@@ -1,37 +1,31 @@
 package mekanism.client.render.entity;
 
+import javax.annotation.Nonnull;
 import mekanism.client.model.ModelRobit;
 import mekanism.common.entity.EntityRobit;
 import mekanism.common.util.MekanismUtils;
 import mekanism.common.util.MekanismUtils.ResourceType;
-
-import net.minecraft.client.renderer.entity.RenderLiving;
-import net.minecraft.entity.Entity;
+import net.minecraft.client.renderer.entity.EntityRendererManager;
+import net.minecraft.client.renderer.entity.MobRenderer;
 import net.minecraft.util.ResourceLocation;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
 
-@SideOnly(Side.CLIENT)
-public class RenderRobit extends RenderLiving
-{
-	public RenderRobit()
-	{
-		super(new ModelRobit(), 0.5F);
-	}
+public class RenderRobit extends MobRenderer<EntityRobit, ModelRobit> {
 
-	@Override
-	protected ResourceLocation getEntityTexture(Entity entity)
-	{
-		EntityRobit robit = (EntityRobit)entity;
+    private static final ResourceLocation ROBIT = MekanismUtils.getResource(ResourceType.RENDER, "robit.png");
+    private static final ResourceLocation ROBIT_ALT = MekanismUtils.getResource(ResourceType.RENDER, "robit2.png");
 
-		if((Math.abs(entity.posX-entity.prevPosX) + Math.abs(entity.posX-entity.prevPosX)) > 0.001)
-		{
-			if(robit.ticksExisted % 3 == 0)
-			{
-				robit.texTick = !robit.texTick;
-			}
-		}
+    public RenderRobit(EntityRendererManager renderManager) {
+        super(renderManager, new ModelRobit(), 0.5F);
+    }
 
-		return MekanismUtils.getResource(ResourceType.RENDER, "Robit" + (robit.texTick ? "2" : "") + ".png");
-	}
+    @Nonnull
+    @Override
+    public ResourceLocation getEntityTexture(@Nonnull EntityRobit robit) {
+        if ((Math.abs(robit.getPosX() - robit.prevPosX) + Math.abs(robit.getPosX() - robit.prevPosX)) > 0.001) {
+            if (robit.ticksExisted % 3 == 0) {
+                robit.texTick = !robit.texTick;
+            }
+        }
+        return robit.texTick ? ROBIT_ALT : ROBIT;
+    }
 }

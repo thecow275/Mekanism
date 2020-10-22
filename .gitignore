@@ -1,19 +1,26 @@
 build
 output
-.gradle
 .idea
 *.iml
+*.ipr
+*.iws
+out
 
 Mekanism*.jar
 MDK.zip
 /run
-/gradle
-*.bat
+/.gradle
 *.classpath
 *.project
 /.settings
+/eclipse
+*.txt
+*.launch
 
-*.mtl
 *.blend1
 *.blend2
 /bin
+/logs
+
+# datagen caches
+/src/datagen/generated/**/.cache

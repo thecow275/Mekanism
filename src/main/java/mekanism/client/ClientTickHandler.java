@@ -1,571 +1,425 @@
 package mekanism.client;
 
-import java.util.HashMap;
-import java.util.HashSet;
+import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.systems.RenderSystem;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
-
-import mekanism.api.EnumColor;
-import mekanism.api.IClientTicker;
-import mekanism.api.StackUtils;
-import mekanism.api.gas.GasStack;
-import mekanism.client.sound.GasMaskSound;
-import mekanism.client.sound.JetpackSound;
+import java.util.Map.Entry;
+import java.util.Random;
+import java.util.UUID;
+import mekanism.client.gui.GuiRadialSelector;
+import mekanism.client.render.RenderTickHandler;
+import mekanism.client.sound.GeigerSound;
 import mekanism.client.sound.SoundHandler;
-import mekanism.common.KeySync;
+import mekanism.common.CommonPlayerTickHandler;
 import mekanism.common.Mekanism;
-import mekanism.common.block.BlockMachine.MachineType;
-import mekanism.common.item.ItemBlockMachine;
-import mekanism.common.item.ItemConfigurator;
-import mekanism.common.item.ItemElectricBow;
-import mekanism.common.item.ItemFreeRunners;
-import mekanism.common.item.ItemGasMask;
-import mekanism.common.item.ItemJetpack;
-import mekanism.common.item.ItemJetpack.JetpackMode;
-import mekanism.common.item.ItemScubaTank;
-import mekanism.common.item.ItemWalkieTalkie;
-import mekanism.common.network.PacketConfiguratorState.ConfiguratorStateMessage;
-import mekanism.common.network.PacketElectricBowState.ElectricBowStateMessage;
-import mekanism.common.network.PacketJetpackData.JetpackDataMessage;
-import mekanism.common.network.PacketJetpackData.JetpackPacket;
-import mekanism.common.network.PacketPortableTankState.PortableTankStateMessage;
-import mekanism.common.network.PacketScubaTankData.ScubaTankDataMessage;
-import mekanism.common.network.PacketScubaTankData.ScubaTankPacket;
-import mekanism.common.network.PacketWalkieTalkieState.WalkieTalkieStateMessage;
-import mekanism.common.util.LangUtils;
+import mekanism.common.base.HolidayManager;
+import mekanism.common.base.KeySync;
+import mekanism.common.config.MekanismConfig;
+import mekanism.common.content.gear.IModuleContainerItem;
+import mekanism.common.content.gear.Modules;
+import mekanism.common.content.gear.mekasuit.ModuleJetpackUnit;
+import mekanism.common.content.gear.mekasuit.ModuleMekaSuit.ModuleVisionEnhancementUnit;
+import mekanism.common.content.teleporter.TeleporterFrequency;
+import mekanism.common.item.gear.ItemFlamethrower;
+import mekanism.common.item.gear.ItemJetpack;
+import mekanism.common.item.gear.ItemJetpack.JetpackMode;
+import mekanism.common.item.gear.ItemMekaSuitArmor;
+import mekanism.common.item.interfaces.IModeItem;
+import mekanism.common.item.interfaces.IRadialModeItem;
+import mekanism.common.item.interfaces.IRadialSelectorEnum;
+import mekanism.common.lib.radiation.RadiationManager.RadiationScale;
+import mekanism.common.network.PacketModeChange;
+import mekanism.common.network.PacketPortableTeleporterGui;
+import mekanism.common.network.PacketPortableTeleporterGui.PortableTeleporterPacketType;
+import mekanism.common.network.PacketRadialModeChange;
+import mekanism.common.registries.MekanismGases;
+import mekanism.common.util.ChemicalUtil;
+import mekanism.common.util.EnumUtils;
 import mekanism.common.util.MekanismUtils;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.entity.AbstractClientPlayer;
-import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.client.renderer.entity.model.ArmorStandModel;
+import net.minecraft.client.renderer.entity.model.BipedModel;
+import net.minecraft.client.renderer.entity.model.EntityModel;
+import net.minecraft.client.renderer.entity.model.PlayerModel;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.item.ArmorStandEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.inventory.EquipmentSlotType;
 import net.minecraft.item.ItemStack;
-import net.minecraft.util.ChatComponentText;
-import net.minecraft.util.StringUtils;
-
-import com.mojang.authlib.minecraft.MinecraftProfileTexture;
-
-import cpw.mods.fml.client.FMLClientHandler;
-import cpw.mods.fml.common.eventhandler.SubscribeEvent;
-import cpw.mods.fml.common.gameevent.TickEvent.ClientTickEvent;
-import cpw.mods.fml.common.gameevent.TickEvent.Phase;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+import net.minecraft.particles.ParticleTypes;
+import net.minecraft.potion.EffectInstance;
+import net.minecraft.potion.Effects;
+import net.minecraft.util.Hand;
+import net.minecraft.util.math.vector.Vector3d;
+import net.minecraftforge.client.event.EntityViewRenderEvent;
+import net.minecraftforge.client.event.GuiScreenEvent;
+import net.minecraftforge.client.event.InputEvent.MouseScrollEvent;
+import net.minecraftforge.client.event.RenderLivingEvent;
+import net.minecraftforge.event.TickEvent.ClientTickEvent;
+import net.minecraftforge.event.TickEvent.Phase;
+import net.minecraftforge.eventbus.api.Event;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 /**
  * Client-side tick handler for Mekanism. Used mainly for the update check upon startup.
- * @author AidanBrady
  *
+ * @author AidanBrady
  */
-@SideOnly(Side.CLIENT)
-public class ClientTickHandler
-{
-	public boolean hasNotified = false;
-	public boolean initHoliday = false;
+public class ClientTickHandler {
 
-	public boolean preloadedSounds = false;
+    public static final Minecraft minecraft = Minecraft.getInstance();
+    public static final Random rand = new Random();
+    public static final Map<PlayerEntity, TeleportData> portableTeleports = new Object2ObjectOpenHashMap<>();
+    public boolean initHoliday = false;
+    public boolean shouldReset = false;
+    public static boolean firstTick = true;
+    public static boolean visionEnhancement = false;
 
-	public boolean lastTickUpdate;
+    private static long lastScrollTime = -1;
+    private static double scrollDelta;
 
-	public boolean shouldReset = false;
+    public static boolean isJetpackActive(PlayerEntity player) {
+        if (player != minecraft.player) {
+            return Mekanism.playerState.isJetpackOn(player);
+        }
+        if (MekanismUtils.isPlayingMode(player)) {
+            ItemStack chest = player.getItemStackFromSlot(EquipmentSlotType.CHEST);
+            if (!chest.isEmpty()) {
+                JetpackMode mode = getJetpackMode(chest);
+                if (mode == JetpackMode.NORMAL) {
+                    return minecraft.currentScreen == null && minecraft.gameSettings.keyBindJump.isKeyDown();
+                } else if (mode == JetpackMode.HOVER) {
+                    boolean ascending = minecraft.gameSettings.keyBindJump.isKeyDown();
+                    boolean descending = minecraft.gameSettings.keyBindSneak.isKeyDown();
+                    if (!ascending || descending || minecraft.currentScreen != null) {
+                        return !CommonPlayerTickHandler.isOnGroundOrSleeping(player);
+                    }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
-	public static Minecraft mc = FMLClientHandler.instance().getClient();
+    /** Will return null if jetpack module is not active */
+    private static JetpackMode getJetpackMode(ItemStack stack) {
+        if (stack.getItem() instanceof ItemJetpack && ChemicalUtil.hasGas(stack)) {
+            return ((ItemJetpack) stack.getItem()).getMode(stack);
+        } else if (stack.getItem() instanceof IModuleContainerItem && ChemicalUtil.hasChemical(stack, MekanismGases.HYDROGEN.get())) {
+            ModuleJetpackUnit module = Modules.load(stack, Modules.JETPACK_UNIT);
+            if (module != null && module.isEnabled()) {
+                return module.getMode();
+            }
+        }
+        return null;
+    }
 
-	public static final String MIKE_CAPE = "https://dl.dropboxusercontent.com/s/ji06yflixnszcby/cape.png";
-	public static final String DONATE_CAPE = "https://dl.dropboxusercontent.com/u/90411166/donate.png";
-	public static final String AIDAN_CAPE = "https://dl.dropboxusercontent.com/u/90411166/aidan.png";
+    public static boolean isScubaMaskOn(PlayerEntity player) {
+        if (player != minecraft.player) {
+            return Mekanism.playerState.isScubaMaskOn(player);
+        }
+        return CommonPlayerTickHandler.isScubaMaskOn(player);
+    }
 
-	private Map<String, CapeBufferDownload> mikeDownload = new HashMap<String, CapeBufferDownload>();
-	private Map<String, CapeBufferDownload> donateDownload = new HashMap<String, CapeBufferDownload>();
-	private Map<String, CapeBufferDownload> aidanDownload = new HashMap<String, CapeBufferDownload>();
+    public static boolean isGravitationalModulationOn(PlayerEntity player) {
+        if (player != minecraft.player) {
+            return Mekanism.playerState.isGravitationalModulationOn(player);
+        }
+        return CommonPlayerTickHandler.isGravitationalModulationOn(player);
+    }
 
-	public static Set<IClientTicker> tickingSet = new HashSet<IClientTicker>();
+    public static boolean isVisionEnhancementOn(PlayerEntity player) {
+        ModuleVisionEnhancementUnit module = Modules.load(player.getItemStackFromSlot(EquipmentSlotType.HEAD), Modules.VISION_ENHANCEMENT_UNIT);
+        return module != null && module.isEnabled() && module.getContainerEnergy().greaterThan(MekanismConfig.gear.mekaSuitEnergyUsageVisionEnhancement.get());
+    }
 
-	@SubscribeEvent
-	public void onTick(ClientTickEvent event)
-	{
-		if(event.phase == Phase.START)
-		{
-			tickStart();
-		}
-		else if(event.phase == Phase.END)
-		{
-			tickEnd();
-		}
-	}
+    public static boolean isFlamethrowerOn(PlayerEntity player) {
+        if (player != minecraft.player) {
+            return Mekanism.playerState.isFlamethrowerOn(player);
+        }
+        return hasFlamethrower(player) && minecraft.gameSettings.keyBindUseItem.isKeyDown();
+    }
 
-	public void tickStart()
-	{
-		if(!preloadedSounds && MekanismClient.enableSounds && MekanismClient.audioHandler != null && MekanismClient.audioHandler.isSystemLoaded())
-		{
-			preloadedSounds = true;
-			
-			new Thread(new Runnable() {
-				@Override
-				public void run()
-				{
-					MekanismClient.audioHandler.preloadSounds();
-				}
-			}).start();
-		}
+    public static boolean hasFlamethrower(PlayerEntity player) {
+        ItemStack currentItem = player.inventory.getCurrentItem();
+        return !currentItem.isEmpty() && currentItem.getItem() instanceof ItemFlamethrower && ChemicalUtil.hasGas(currentItem);
+    }
 
-		MekanismClient.ticksPassed++;
+    public static void portableTeleport(PlayerEntity player, Hand hand, TeleporterFrequency freq) {
+        int delay = MekanismConfig.gear.portableTeleporterDelay.get();
+        if (delay == 0) {
+            Mekanism.packetHandler.sendToServer(new PacketPortableTeleporterGui(PortableTeleporterPacketType.TELEPORT, hand, freq));
+        } else {
+            portableTeleports.put(player, new TeleportData(hand, freq, minecraft.world.getGameTime() + delay));
+        }
+    }
 
-		if(!hasNotified && mc.theWorld != null && Mekanism.latestVersionNumber != null && Mekanism.recentNews != null)
-		{
-			MekanismUtils.checkForUpdates(mc.thePlayer);
-			hasNotified = true;
-		}
+    @SubscribeEvent
+    public void onTick(ClientTickEvent event) {
+        if (event.phase == Phase.START) {
+            tickStart();
+        }
+    }
 
-		if(!Mekanism.proxy.isPaused())
-		{
-			for(Iterator<IClientTicker> iter = tickingSet.iterator(); iter.hasNext();)
-			{
-				IClientTicker ticker = iter.next();
+    public void tickStart() {
+        MekanismClient.ticksPassed++;
 
-				if(ticker.needsTicks())
-				{
-					ticker.clientTick();
-				}
-				else {
-					iter.remove();
-				}
-			}
-		}
+        if (firstTick && minecraft.world != null) {
+            MekanismClient.launchClient();
+            firstTick = false;
+        }
 
-		if(mc.theWorld != null)
-		{
-			shouldReset = true;
-		}
-		else if(shouldReset)
-		{
-			MekanismClient.reset();
-			shouldReset = false;
-		}
+        if (minecraft.world != null) {
+            shouldReset = true;
+        } else if (shouldReset) {
+            MekanismClient.reset();
+            shouldReset = false;
+        }
 
-		if(mc.theWorld != null && !Mekanism.proxy.isPaused())
-		{
-			if((!initHoliday || MekanismClient.ticksPassed % 1200 == 0) && mc.thePlayer != null)
-			{
-				HolidayManager.check();
-				initHoliday = true;
-			}
+        if (minecraft.world != null && minecraft.player != null && !Mekanism.proxy.isPaused()) {
+            if (!initHoliday || MekanismClient.ticksPassed % 1_200 == 0) {
+                HolidayManager.notify(Minecraft.getInstance().player);
+                initHoliday = true;
+            }
 
-			for(EntityPlayer entityPlayer : (List<EntityPlayer>)mc.theWorld.playerEntities)
-			{
-				if(entityPlayer instanceof AbstractClientPlayer)
-				{
-					AbstractClientPlayer player = (AbstractClientPlayer)entityPlayer;
+            if (minecraft.world.getGameTime() - lastScrollTime > 20) {
+                scrollDelta = 0;
+            }
 
-					if(player != null)
-					{
-						if(StringUtils.stripControlCodes(player.getCommandSenderName()).equals("mikeacttck"))
-						{
-							CapeBufferDownload download = mikeDownload.get(player.getCommandSenderName());
+            Mekanism.radiationManager.tickClient(minecraft.player);
 
-							if(download == null)
-							{
-								download = new CapeBufferDownload(player.getCommandSenderName(), MIKE_CAPE);
-								mikeDownload.put(player.getCommandSenderName(), download);
+            UUID playerUUID = minecraft.player.getUniqueID();
+            // Update player's state for various items; this also automatically notifies server if something changed and
+            // kicks off sounds as necessary
+            Mekanism.playerState.setJetpackState(playerUUID, isJetpackActive(minecraft.player), true);
+            Mekanism.playerState.setScubaMaskState(playerUUID, isScubaMaskOn(minecraft.player), true);
+            Mekanism.playerState.setGravitationalModulationState(playerUUID, isGravitationalModulationOn(minecraft.player), true);
+            Mekanism.playerState.setFlamethrowerState(playerUUID, hasFlamethrower(minecraft.player), isFlamethrowerOn(minecraft.player), true);
 
-								download.start();
-							}
-							else {
-								if(!download.downloaded)
-								{
-									continue;
-								}
+            for (Iterator<Entry<PlayerEntity, TeleportData>> iter = portableTeleports.entrySet().iterator(); iter.hasNext(); ) {
+                Entry<PlayerEntity, TeleportData> entry = iter.next();
+                PlayerEntity player = entry.getKey();
+                for (int i = 0; i < 100; i++) {
+                    double x = player.getPosX() + rand.nextDouble() - 0.5D;
+                    double y = player.getPosY() + rand.nextDouble() * 2 - 2D;
+                    double z = player.getPosZ() + rand.nextDouble() - 0.5D;
+                    minecraft.world.addParticle(ParticleTypes.PORTAL, x, y, z, 0, 1, 0);
+                }
 
-								player.func_152121_a(MinecraftProfileTexture.Type.CAPE, download.getResourceLocation());
-							}
-						}
-						else if(StringUtils.stripControlCodes(player.getCommandSenderName()).equals("aidancbrady"))
-						{
-							CapeBufferDownload download = aidanDownload.get(player.getCommandSenderName());
+                if (minecraft.world.getGameTime() == entry.getValue().teleportTime) {
+                    Mekanism.packetHandler.sendToServer(new PacketPortableTeleporterGui(PortableTeleporterPacketType.TELEPORT, entry.getValue().hand, entry.getValue().freq));
+                    iter.remove();
+                }
+            }
 
-							if(download == null)
-							{
-								download = new CapeBufferDownload(player.getCommandSenderName(), AIDAN_CAPE);
-								aidanDownload.put(player.getCommandSenderName(), download);
+            ItemStack chestStack = minecraft.player.getItemStackFromSlot(EquipmentSlotType.CHEST);
+            ModuleJetpackUnit jetpackModule = Modules.load(chestStack, Modules.JETPACK_UNIT);
 
-								download.start();
-							}
-							else {
-								if(!download.downloaded)
-								{
-									continue;
-								}
+            if (!chestStack.isEmpty() && (chestStack.getItem() instanceof ItemJetpack || jetpackModule != null)) {
+                MekanismClient.updateKey(minecraft.gameSettings.keyBindJump, KeySync.ASCEND);
+                MekanismClient.updateKey(minecraft.gameSettings.keyBindSneak, KeySync.DESCEND);
+            }
 
-								player.func_152121_a(MinecraftProfileTexture.Type.CAPE, download.getResourceLocation());
-							}
-						}
-						else if(Mekanism.donators.contains(StringUtils.stripControlCodes(player.getCommandSenderName())))
-						{
-							CapeBufferDownload download = donateDownload.get(player.getCommandSenderName());
+            if (isJetpackActive(minecraft.player)) {
+                JetpackMode mode = getJetpackMode(chestStack);
+                Vector3d motion = minecraft.player.getMotion();
+                if (mode == JetpackMode.NORMAL) {
+                    minecraft.player.setMotion(motion.getX(), Math.min(motion.getY() + 0.15D, 0.5D), motion.getZ());
+                    minecraft.player.fallDistance = 0.0F;
+                } else if (mode == JetpackMode.HOVER) {
+                    boolean ascending = minecraft.gameSettings.keyBindJump.isKeyDown();
+                    boolean descending = minecraft.gameSettings.keyBindSneak.isKeyDown();
+                    if ((!ascending && !descending) || (ascending && descending) || minecraft.currentScreen != null) {
+                        if (motion.getY() > 0) {
+                            minecraft.player.setMotion(motion.getX(), Math.max(motion.getY() - 0.15D, 0), motion.getZ());
+                        } else if (motion.getY() < 0) {
+                            if (!CommonPlayerTickHandler.isOnGroundOrSleeping(minecraft.player)) {
+                                minecraft.player.setMotion(motion.getX(), Math.min(motion.getY() + 0.15D, 0), motion.getZ());
+                            }
+                        }
+                    } else if (ascending) {
+                        minecraft.player.setMotion(motion.getX(), Math.min(motion.getY() + 0.15D, 0.2D), motion.getZ());
+                    } else if (!CommonPlayerTickHandler.isOnGroundOrSleeping(minecraft.player)) {
+                        minecraft.player.setMotion(motion.getX(), Math.max(motion.getY() - 0.15D, -0.2D), motion.getZ());
+                    }
+                    minecraft.player.fallDistance = 0.0F;
+                }
+            }
 
-							if(download == null)
-							{
-								download = new CapeBufferDownload(player.getCommandSenderName(), DONATE_CAPE);
-								donateDownload.put(player.getCommandSenderName(), download);
+            if (isScubaMaskOn(minecraft.player) && minecraft.player.getAir() == 300) {
+                for (EffectInstance effect : minecraft.player.getActivePotionEffects()) {
+                    for (int i = 0; i < 9; i++) {
+                        effect.tick(minecraft.player, () -> MekanismUtils.onChangedPotionEffect(minecraft.player, effect, true));
+                    }
+                }
+            }
 
-								download.start();
-							}
-							else {
-								if(!download.downloaded)
-								{
-									continue;
-								}
+            if (isVisionEnhancementOn(minecraft.player)) {
+                visionEnhancement = true;
+                // adds if it doesn't exist, otherwise tops off duration to 200
+                minecraft.player.addPotionEffect(new EffectInstance(Effects.NIGHT_VISION, 200, 0, false, true, false));
+            } else if (visionEnhancement) {
+                visionEnhancement = false;
+                minecraft.player.removePotionEffect(Effects.NIGHT_VISION);
+            }
 
-								player.func_152121_a(MinecraftProfileTexture.Type.CAPE, download.getResourceLocation());
-							}
-						}
-					}
-				}
-			}
+            ItemStack stack = minecraft.player.getItemStackFromSlot(EquipmentSlotType.MAINHAND);
+            if (MekKeyHandler.isKeyDown(MekanismKeyHandler.handModeSwitchKey) && stack.getItem() instanceof IRadialModeItem) {
+                if (minecraft.currentScreen == null || minecraft.currentScreen instanceof GuiRadialSelector) {
+                    updateSelectorRenderer((IRadialModeItem<?>) stack.getItem());
+                }
+            } else {
+                if (minecraft.currentScreen instanceof GuiRadialSelector) {
+                    minecraft.displayGuiScreen(null);
+                }
+            }
 
-			ItemStack stack = mc.thePlayer.getCurrentEquippedItem();
+            if (MekanismConfig.client.enablePlayerSounds.get() && SoundHandler.radiationSoundMap.isEmpty()) {
+                for (RadiationScale scale : EnumUtils.RADIATION_SCALES) {
+                    if (scale != RadiationScale.NONE) {
+                        GeigerSound sound = GeigerSound.create(minecraft.player, scale);
+                        SoundHandler.radiationSoundMap.put(scale, sound);
+                        SoundHandler.playSound(sound);
+                    }
+                }
+            }
+        }
+    }
 
-			if(mc.currentScreen == null)
-			{
-				if(mc.thePlayer.isSneaking() && StackUtils.getItem(mc.thePlayer.getCurrentEquippedItem()) instanceof ItemConfigurator)
-				{
-					ItemConfigurator item = (ItemConfigurator)mc.thePlayer.getCurrentEquippedItem().getItem();
+    private <TYPE extends Enum<TYPE> & IRadialSelectorEnum<TYPE>> void updateSelectorRenderer(IRadialModeItem<TYPE> modeItem) {
+        Class<TYPE> modeClass = modeItem.getModeClass();
+        if (!(minecraft.currentScreen instanceof GuiRadialSelector) || ((GuiRadialSelector<?>) minecraft.currentScreen).getEnumClass() != modeClass) {
+            minecraft.displayGuiScreen(new GuiRadialSelector<>(modeClass, () -> {
+                if (minecraft.player != null) {
+                    ItemStack s = minecraft.player.getItemStackFromSlot(EquipmentSlotType.MAINHAND);
+                    if (s.getItem() instanceof IRadialModeItem) {
+                        return ((IRadialModeItem<TYPE>) s.getItem()).getMode(s);
+                    }
+                }
+                return modeItem.getDefaultMode();
+            }, type -> {
+                if (minecraft.player != null) {
+                    Mekanism.packetHandler.sendToServer(new PacketRadialModeChange(EquipmentSlotType.MAINHAND, type.ordinal()));
+                }
+            }));
+        }
+    }
 
-					if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed())
-					{
-						if(!lastTickUpdate)
-						{
-							item.setState(stack, (byte)(item.getState(stack) < 3 ? item.getState(stack)+1 : 0));
-							Mekanism.packetHandler.sendToServer(new ConfiguratorStateMessage(item.getState(stack)));
-							mc.thePlayer.addChatMessage(new ChatComponentText(EnumColor.DARK_BLUE + "[Mekanism] " + EnumColor.GREY + MekanismUtils.localize("tooltip.configureState") + ": " + item.getColor(item.getState(stack)) + item.getStateDisplay(item.getState(stack))));
-							lastTickUpdate = true;
-						}
-					}
-					else {
-						lastTickUpdate = false;
-					}
-				}
-				else if(mc.thePlayer.isSneaking() && StackUtils.getItem(mc.thePlayer.getCurrentEquippedItem()) instanceof ItemElectricBow)
-				{
-					ItemElectricBow item = (ItemElectricBow)mc.thePlayer.getCurrentEquippedItem().getItem();
+    @SubscribeEvent
+    public void onMouseEvent(MouseScrollEvent event) {
+        if (MekanismConfig.client.allowModeScroll.get() && minecraft.player != null && minecraft.player.isSneaking()) {
+            handleModeScroll(event, event.getScrollDelta());
+        }
+    }
 
-					if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed())
-					{
-						if(!lastTickUpdate)
-						{
-							item.setFireState(stack, !item.getFireState(stack));
-							Mekanism.packetHandler.sendToServer(new ElectricBowStateMessage(item.getFireState(stack)));
-							mc.thePlayer.addChatMessage(new ChatComponentText(EnumColor.DARK_BLUE + "[Mekanism] " + EnumColor.GREY + MekanismUtils.localize("tooltip.fireMode") + ": " + (item.getFireState(stack) ? EnumColor.DARK_GREEN : EnumColor.DARK_RED) + LangUtils.transYesNo(item.getFireState(stack))));
-							lastTickUpdate = true;
-						}
-					}
-					else {
-						lastTickUpdate = false;
-					}
-				}
-				else if(mc.thePlayer.isSneaking() && StackUtils.getItem(mc.thePlayer.getCurrentEquippedItem()) instanceof ItemBlockMachine)
-				{
-					ItemBlockMachine item = (ItemBlockMachine)mc.thePlayer.getCurrentEquippedItem().getItem();
+    @SubscribeEvent
+    public void onGuiMouseEvent(GuiScreenEvent.MouseScrollEvent.Pre event) {
+        if (event.getGui() instanceof GuiRadialSelector) {
+            handleModeScroll(event, event.getScrollDelta());
+        }
+    }
 
-					if(MachineType.get(mc.thePlayer.getCurrentEquippedItem()) == MachineType.PORTABLE_TANK)
-					{
-						if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed())
-						{
-							if(!lastTickUpdate)
-							{
-								item.setBucketMode(stack, !item.getBucketMode(stack));
-								Mekanism.packetHandler.sendToServer(new PortableTankStateMessage(item.getBucketMode(stack)));
-								mc.thePlayer.addChatMessage(new ChatComponentText(EnumColor.DARK_BLUE + "[Mekanism] " + EnumColor.GREY + MekanismUtils.localize("tooltip.portableTank.bucketMode") + ": " + (item.getBucketMode(stack) ? (EnumColor.DARK_GREEN + "ON") : (EnumColor.DARK_RED + "OFF"))));
-								lastTickUpdate = true;
-							}
-						}
-						else {
-							lastTickUpdate = false;
-						}
-					}
-				}
-				else if(mc.thePlayer.isSneaking() && StackUtils.getItem(mc.thePlayer.getCurrentEquippedItem()) instanceof ItemWalkieTalkie)
-				{
-					ItemWalkieTalkie item = (ItemWalkieTalkie)mc.thePlayer.getCurrentEquippedItem().getItem();
+    private void handleModeScroll(Event event, double delta) {
+        if (delta != 0 && IModeItem.isModeItem(minecraft.player, EquipmentSlotType.MAINHAND)) {
+            lastScrollTime = minecraft.world.getGameTime();
+            scrollDelta += delta;
+            int shift = (int) scrollDelta;
+            scrollDelta %= 1;
+            if (shift != 0) {
+                RenderTickHandler.modeSwitchTimer = 100;
+                Mekanism.packetHandler.sendToServer(new PacketModeChange(EquipmentSlotType.MAINHAND, shift));
+            }
+            event.setCanceled(true);
+        }
+    }
 
-					if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed() && item.getOn(stack))
-					{
-						if(!lastTickUpdate)
-						{
-							int newChan = item.getChannel(stack) < 9 ? item.getChannel(stack)+1 : 1;
-							item.setChannel(stack, newChan);
-							Mekanism.packetHandler.sendToServer(new WalkieTalkieStateMessage(newChan));
-							SoundHandler.playSound("mekanism:etc.Ding");
-							lastTickUpdate = true;
-						}
-					}
-					else {
-						lastTickUpdate = false;
-					}
-				}
-				else if(mc.thePlayer.getEquipmentInSlot(3) != null && mc.thePlayer.getEquipmentInSlot(3).getItem() instanceof ItemJetpack)
-				{
-					ItemStack jetpack = mc.thePlayer.getEquipmentInSlot(3);
+    @SubscribeEvent
+    public void onFogLighting(EntityViewRenderEvent.FogColors event) {
+        if (visionEnhancement) {
+            event.setBlue(0.4F);
+            event.setRed(0.4F);
+            event.setGreen(0.8F);
+        }
+    }
 
-					if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed())
-					{
-						if(!lastTickUpdate)
-						{
-							if(mc.thePlayer.isSneaking())
-							{
-								((ItemJetpack)jetpack.getItem()).setMode(jetpack, JetpackMode.DISABLED);
-							}
-							else {
-								((ItemJetpack)jetpack.getItem()).incrementMode(jetpack);
-							}
-							
-							Mekanism.packetHandler.sendToServer(new JetpackDataMessage(JetpackPacket.MODE, null, mc.thePlayer.isSneaking()));
-							SoundHandler.playSound("mekanism:etc.Hydraulic");
-							lastTickUpdate = true;
-						}
-					}
-					else {
-						lastTickUpdate = false;
-					}
-				}
-				else if(mc.thePlayer.getEquipmentInSlot(3) != null && mc.thePlayer.getEquipmentInSlot(3).getItem() instanceof ItemScubaTank)
-				{
-					ItemStack scubaTank = mc.thePlayer.getEquipmentInSlot(3);
+    @SubscribeEvent
+    public void onFog(EntityViewRenderEvent.RenderFogEvent event) {
+        if (visionEnhancement) {
+            float fog = 0.1F;
+            ModuleVisionEnhancementUnit module = Modules.load(minecraft.player.getItemStackFromSlot(EquipmentSlotType.HEAD), Modules.VISION_ENHANCEMENT_UNIT);
+            if (module != null) {
+                fog -= module.getInstalledCount() * 0.022F;
+            }
+            RenderSystem.fogDensity(fog);
+            RenderSystem.fogMode(GlStateManager.FogMode.EXP2);
+        }
+    }
 
-					if(MekanismKeyHandler.modeSwitchKey.getIsKeyPressed())
-					{
-						if(!lastTickUpdate)
-						{
-							((ItemScubaTank)scubaTank.getItem()).toggleFlowing(scubaTank);
-							Mekanism.packetHandler.sendToServer(new ScubaTankDataMessage(ScubaTankPacket.MODE, null, false));
-							SoundHandler.playSound("mekanism:etc.Hydraulic");
-							lastTickUpdate = true;
-						}
-					}
-					else {
-						lastTickUpdate = false;
-					}
-				}
-				else {
-					lastTickUpdate = false;
-				}
-			}
+    @SubscribeEvent
+    public void renderEntityPre(RenderLivingEvent.Pre<?, ?> evt) {
+        EntityModel<?> model = evt.getRenderer().getEntityModel();
+        if (model instanceof BipedModel) {
+            //If the entity has a biped model, then see if it is wearing a meka suit, in which case we want to hide various parts of the model
+            setModelVisibility(evt.getEntity(), (BipedModel<?>) model, false);
+        }
+    }
 
-			if(mc.thePlayer.getEquipmentInSlot(1) != null && mc.thePlayer.getEquipmentInSlot(1).getItem() instanceof ItemFreeRunners)
-			{
-				mc.thePlayer.stepHeight = 1.002F;
-			}
-			else {
-				if(mc.thePlayer.stepHeight == 1.002F)
-				{
-					mc.thePlayer.stepHeight = 0.5F;
-				}
-			}
+    @SubscribeEvent
+    public void renderEntityPost(RenderLivingEvent.Post<?, ?> evt) {
+        EntityModel<?> model = evt.getRenderer().getEntityModel();
+        if (model instanceof BipedModel) {
+            //Undo model visibility changes we made to ensure that other entities of the same type are properly visible
+            setModelVisibility(evt.getEntity(), (BipedModel<?>) model, true);
+        }
+    }
 
-			if(Mekanism.jetpackOn.contains(mc.thePlayer.getCommandSenderName()) != isJetpackOn(mc.thePlayer))
-			{
-				if(isJetpackOn(mc.thePlayer))
-				{
-					Mekanism.jetpackOn.add(mc.thePlayer.getCommandSenderName());
-				}
-				else {
-					Mekanism.jetpackOn.remove(mc.thePlayer.getCommandSenderName());
-				}
+    private static void setModelVisibility(LivingEntity entity, BipedModel<?> entityModel, boolean showModel) {
+        if (entity.getItemStackFromSlot(EquipmentSlotType.HEAD).getItem() instanceof ItemMekaSuitArmor) {
+            entityModel.bipedHead.showModel = showModel;
+            entityModel.bipedHeadwear.showModel = showModel;
+        }
+        if (entity.getItemStackFromSlot(EquipmentSlotType.CHEST).getItem() instanceof ItemMekaSuitArmor) {
+            entityModel.bipedBody.showModel = showModel;
+            if (!(entity instanceof ArmorStandEntity)) {
+                //Don't adjust arms for armor stands as the model will end up changing them anyways and then we may incorrectly activate them
+                entityModel.bipedLeftArm.showModel = showModel;
+                entityModel.bipedRightArm.showModel = showModel;
+            }
+            if (entityModel instanceof PlayerModel) {
+                PlayerModel<?> playerModel = (PlayerModel<?>) entityModel;
+                playerModel.bipedBodyWear.showModel = showModel;
+                playerModel.bipedLeftArmwear.showModel = showModel;
+                playerModel.bipedRightArmwear.showModel = showModel;
+            } else if (entityModel instanceof ArmorStandModel) {
+                ArmorStandModel armorStandModel = (ArmorStandModel) entityModel;
+                armorStandModel.standRightSide.showModel = showModel;
+                armorStandModel.standLeftSide.showModel = showModel;
+                armorStandModel.standWaist.showModel = showModel;
+            }
+        }
+        if (entity.getItemStackFromSlot(EquipmentSlotType.LEGS).getItem() instanceof ItemMekaSuitArmor) {
+            entityModel.bipedLeftLeg.showModel = showModel;
+            entityModel.bipedRightLeg.showModel = showModel;
+            if (entityModel instanceof PlayerModel) {
+                PlayerModel<?> playerModel = (PlayerModel<?>) entityModel;
+                playerModel.bipedLeftLegwear.showModel = showModel;
+                playerModel.bipedRightLegwear.showModel = showModel;
+            }
+        }
+    }
 
-				Mekanism.packetHandler.sendToServer(new JetpackDataMessage(JetpackPacket.UPDATE, mc.thePlayer.getCommandSenderName(), isJetpackOn(mc.thePlayer)));
-			}
+    private static class TeleportData {
 
-			if(Mekanism.gasmaskOn.contains(mc.thePlayer.getCommandSenderName()) != isGasMaskOn(mc.thePlayer))
-			{
-				if(isGasMaskOn(mc.thePlayer) && mc.currentScreen == null)
-				{
-					Mekanism.gasmaskOn.add(mc.thePlayer.getCommandSenderName());
-				}
-				else {
-					Mekanism.gasmaskOn.remove(mc.thePlayer.getCommandSenderName());
-				}
+        private final Hand hand;
+        private final TeleporterFrequency freq;
+        private final long teleportTime;
 
-				Mekanism.packetHandler.sendToServer(new ScubaTankDataMessage(ScubaTankPacket.UPDATE, mc.thePlayer.getCommandSenderName(), isGasMaskOn(mc.thePlayer)));
-			}
-
-			if(MekanismClient.audioHandler != null)
-			{
-				synchronized(Mekanism.jetpackOn)
-				{
-					for (String username : Mekanism.jetpackOn)
-					{
-						if (mc.theWorld.getPlayerEntityByName(username) != null)
-						{
-							if (MekanismClient.audioHandler.getFrom(mc.theWorld.getPlayerEntityByName(username)) == null)
-							{
-								new JetpackSound(MekanismClient.audioHandler.getIdentifier(), mc.theWorld.getPlayerEntityByName(username));
-							}
-						}
-					}
-				}
-
-				synchronized(Mekanism.gasmaskOn)
-				{
-					for (String username : Mekanism.gasmaskOn)
-					{
-						if (mc.theWorld.getPlayerEntityByName(username) != null)
-						{
-							if (MekanismClient.audioHandler.getFrom(mc.theWorld.getPlayerEntityByName(username)) == null)
-							{
-								new GasMaskSound(MekanismClient.audioHandler.getIdentifier(), mc.theWorld.getPlayerEntityByName(username));
-							}
-						}
-					}
-				}
-			}
-
-			if(mc.thePlayer.getEquipmentInSlot(3) != null && mc.thePlayer.getEquipmentInSlot(3).getItem() instanceof ItemJetpack)
-			{
-				MekanismClient.updateKey(mc.gameSettings.keyBindJump, KeySync.ASCEND);
-				MekanismClient.updateKey(mc.gameSettings.keyBindSneak, KeySync.DESCEND);
-			}
-
-			if(isJetpackOn(mc.thePlayer))
-			{
-				ItemJetpack jetpack = (ItemJetpack)mc.thePlayer.getEquipmentInSlot(3).getItem();
-
-				if(jetpack.getMode(mc.thePlayer.getEquipmentInSlot(3)) == JetpackMode.NORMAL)
-				{
-					mc.thePlayer.motionY = Math.min(mc.thePlayer.motionY + 0.15D, 0.5D);
-					mc.thePlayer.fallDistance = 0.0F;
-				}
-				else if(jetpack.getMode(mc.thePlayer.getEquipmentInSlot(3)) == JetpackMode.HOVER)
-				{
-					if((!mc.gameSettings.keyBindJump.getIsKeyPressed() && !mc.gameSettings.keyBindSneak.getIsKeyPressed()) || (mc.gameSettings.keyBindJump.getIsKeyPressed() && mc.gameSettings.keyBindSneak.getIsKeyPressed()) || mc.currentScreen != null)
-					{
-						if(mc.thePlayer.motionY > 0)
-						{
-							mc.thePlayer.motionY = Math.max(mc.thePlayer.motionY - 0.15D, 0);
-						}
-						else if(mc.thePlayer.motionY < 0)
-						{
-							mc.thePlayer.motionY = Math.min(mc.thePlayer.motionY + 0.15D, 0);
-						}
-					}
-					else {
-						if(mc.gameSettings.keyBindJump.getIsKeyPressed() && mc.currentScreen == null)
-						{
-							mc.thePlayer.motionY = Math.min(mc.thePlayer.motionY + 0.15D, 0.2D);
-						}
-						else if(mc.gameSettings.keyBindSneak.getIsKeyPressed() && mc.currentScreen == null)
-						{
-							mc.thePlayer.motionY = Math.max(mc.thePlayer.motionY - 0.15D, -0.2D);
-						}
-					}
-
-					mc.thePlayer.fallDistance = 0.0F;
-				}
-
-				jetpack.useGas(mc.thePlayer.getEquipmentInSlot(3));
-			}
-
-			if(isGasMaskOn(mc.thePlayer))
-			{
-				ItemScubaTank tank = (ItemScubaTank)mc.thePlayer.getEquipmentInSlot(3).getItem();
-
-				final int max = 300;
-				
-				tank.useGas(mc.thePlayer.getEquipmentInSlot(3));
-				GasStack received = tank.removeGas(mc.thePlayer.getEquipmentInSlot(3), max-mc.thePlayer.getAir());
-				
-				if(received != null)
-				{
-					mc.thePlayer.setAir(mc.thePlayer.getAir()+received.amount);
-					
-					if(mc.thePlayer.getAir() == max)
-					{
-						mc.thePlayer.clearActivePotions();
-					}
-				}
-			}
-		}
-	}
-
-	public static void killDeadNetworks()
-	{
-		for(Iterator<IClientTicker> iter = tickingSet.iterator(); iter.hasNext();)
-		{
-			if(!iter.next().needsTicks())
-			{
-				iter.remove();
-			}
-		}
-	}
-
-	public static boolean isJetpackOn(EntityPlayer player)
-	{
-		if(player != mc.thePlayer)
-		{
-			return Mekanism.jetpackOn.contains(player.getCommandSenderName());
-		}
-
-		ItemStack stack = player.inventory.armorInventory[2];
-
-		if(stack != null)
-		{
-			if(stack.getItem() instanceof ItemJetpack)
-			{
-				ItemJetpack jetpack = (ItemJetpack)stack.getItem();
-
-				if(jetpack.getGas(stack) != null)
-				{
-					if((mc.gameSettings.keyBindJump.getIsKeyPressed() && jetpack.getMode(stack) == JetpackMode.NORMAL) && mc.currentScreen == null)
-					{
-						return true;
-					}
-					else if(jetpack.getMode(stack) == JetpackMode.HOVER)
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-	public static boolean isGasMaskOn(EntityPlayer player)
-	{
-		if(player != mc.thePlayer)
-		{
-			return Mekanism.gasmaskOn.contains(player.getCommandSenderName());
-		}
-
-		ItemStack tank = player.inventory.armorInventory[2];
-		ItemStack mask = player.inventory.armorInventory[3];
-
-		if(tank != null && mask != null)
-		{
-			if(tank.getItem() instanceof ItemScubaTank && mask.getItem() instanceof ItemGasMask)
-			{
-				ItemScubaTank scubaTank = (ItemScubaTank)tank.getItem();
-
-				if(scubaTank.getGas(tank) != null)
-				{
-					if(scubaTank.getFlowing(tank))
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-	public void tickEnd()
-	{
-		if(MekanismClient.audioHandler != null)
-		{
-			synchronized(MekanismClient.audioHandler.sounds)
-			{
-				MekanismClient.audioHandler.onTick();
-			}
-		}
-	}
+        public TeleportData(Hand h, TeleporterFrequency f, long t) {
+            hand = h;
+            freq = f;
+            teleportTime = t;
+        }
+    }
 }

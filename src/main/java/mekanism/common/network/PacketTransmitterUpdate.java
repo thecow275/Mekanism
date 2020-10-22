@@ -1,202 +1,111 @@
 package mekanism.common.network;
 
-import mekanism.api.Coord4D;
-import mekanism.api.gas.Gas;
-import mekanism.api.gas.GasNetwork;
-import mekanism.api.gas.GasRegistry;
-import mekanism.api.gas.GasStack;
-import mekanism.api.transmitters.IGridTransmitter;
-import mekanism.common.EnergyNetwork;
-import mekanism.common.FluidNetwork;
-import mekanism.common.PacketHandler;
-import mekanism.common.network.PacketTransmitterUpdate.TransmitterUpdateMessage;
-
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.tileentity.TileEntity;
-import net.minecraftforge.fluids.Fluid;
-import net.minecraftforge.fluids.FluidRegistry;
+import java.util.UUID;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+import javax.annotation.Nonnull;
+import mekanism.api.chemical.merged.BoxedChemical;
+import mekanism.common.content.network.BoxedChemicalNetwork;
+import mekanism.common.content.network.EnergyNetwork;
+import mekanism.common.content.network.FluidNetwork;
+import mekanism.common.lib.transmitter.DynamicBufferedNetwork;
+import mekanism.common.lib.transmitter.DynamicNetwork;
+import mekanism.common.lib.transmitter.TransmitterNetworkRegistry;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.network.PacketBuffer;
 import net.minecraftforge.fluids.FluidStack;
-import cpw.mods.fml.common.network.simpleimpl.IMessage;
-import cpw.mods.fml.common.network.simpleimpl.IMessageHandler;
-import cpw.mods.fml.common.network.simpleimpl.MessageContext;
+import net.minecraftforge.fml.network.NetworkEvent.Context;
 
-import io.netty.buffer.ByteBuf;
+public class PacketTransmitterUpdate {
 
-public class PacketTransmitterUpdate implements IMessageHandler<TransmitterUpdateMessage, IMessage>
-{
-	@Override
-	public IMessage onMessage(TransmitterUpdateMessage message, MessageContext context) 
-	{
-		EntityPlayer player = PacketHandler.getPlayer(context);
-		
-		if(message.packetType == PacketType.UPDATE)
-		{
-			TileEntity tileEntity = message.coord4D.getTileEntity(player.worldObj);
+    private final PacketType packetType;
+    private final UUID networkID;
+    private final float scale;
+    @Nonnull
+    private BoxedChemical chemical = BoxedChemical.EMPTY;
+    @Nonnull
+    private FluidStack fluidStack = FluidStack.EMPTY;
 
-			if(tileEntity instanceof IGridTransmitter)
-			{
-				((IGridTransmitter)tileEntity).refreshTransmitterNetwork();
-			}
-		}
-		else if(message.packetType == PacketType.ENERGY)
-		{
-			TileEntity tileEntity = message.coord4D.getTileEntity(player.worldObj);
+    public PacketTransmitterUpdate(EnergyNetwork network) {
+        this(network, PacketType.ENERGY);
+    }
 
-			if(tileEntity instanceof IGridTransmitter)
-			{
-				((IGridTransmitter<EnergyNetwork>)tileEntity).getTransmitterNetwork().clientEnergyScale = message.power;
-			}
-		}
-		else if(message.packetType == PacketType.GAS)
-		{
-			TileEntity tileEntity = message.coord4D.getTileEntity(player.worldObj);
+    public PacketTransmitterUpdate(BoxedChemicalNetwork network, @Nonnull BoxedChemical chemical) {
+        this(network, PacketType.CHEMICAL);
+        this.chemical = chemical;
+    }
 
-			if(tileEntity instanceof IGridTransmitter)
-			{
-				GasNetwork net = ((IGridTransmitter<GasNetwork>)tileEntity).getTransmitterNetwork();
+    public PacketTransmitterUpdate(FluidNetwork network, @Nonnull FluidStack fluidStack) {
+        this(network, PacketType.FLUID);
+        this.fluidStack = fluidStack;
+    }
 
-				if(message.gasType != null)
-				{
-					net.refGas = message.gasType;
-				}
+    private PacketTransmitterUpdate(DynamicBufferedNetwork<?, ?, ?, ?> network, PacketType type) {
+        this(type, network.getUUID(), network.currentScale);
+    }
 
-				net.gasStored = message.gasStack;
-				net.didTransfer = message.didGasTransfer;
-			}
-		}
-		else if(message.packetType == PacketType.FLUID)
-		{
-			TileEntity tileEntity = message.coord4D.getTileEntity(player.worldObj);
+    private PacketTransmitterUpdate(PacketType type, UUID networkID, float scale) {
+        packetType = type;
+        this.networkID = networkID;
+        this.scale = scale;
+    }
 
-			if(tileEntity instanceof IGridTransmitter)
-			{
-				FluidNetwork net = ((IGridTransmitter<FluidNetwork>)tileEntity).getTransmitterNetwork();
+    public static void handle(PacketTransmitterUpdate message, Supplier<Context> context) {
+        PlayerEntity player = BasePacketHandler.getPlayer(context);
+        if (player == null) {
+            return;
+        }
+        context.get().enqueueWork(() -> {
+            DynamicNetwork<?, ?, ?> clientNetwork = TransmitterNetworkRegistry.getInstance().getClientNetwork(message.networkID);
+            if (clientNetwork != null && message.packetType.networkTypeMatches(clientNetwork)) {
+                //Note: We set the information even if opaque transmitters is true in case the client turns the config setting off
+                // so that they will have the proper information to then render
+                if (message.packetType == PacketType.CHEMICAL) {
+                    ((BoxedChemicalNetwork) clientNetwork).setLastChemical(message.chemical);
+                } else if (message.packetType == PacketType.FLUID) {
+                    ((FluidNetwork) clientNetwork).setLastFluid(message.fluidStack);
+                }
+                ((DynamicBufferedNetwork<?, ?, ?, ?>) clientNetwork).currentScale = message.scale;
+            }
+        });
+        context.get().setPacketHandled(true);
+    }
 
-				if(message.fluidType != null)
-				{
-					net.refFluid = message.fluidType;
-				}
+    public static void encode(PacketTransmitterUpdate pkt, PacketBuffer buf) {
+        buf.writeEnumValue(pkt.packetType);
+        buf.writeUniqueId(pkt.networkID);
+        buf.writeFloat(pkt.scale);
+        BasePacketHandler.log("Sending '" + pkt.packetType + "' update message for network with id " + pkt.networkID);
+        if (pkt.packetType == PacketType.FLUID) {
+            pkt.fluidStack.writeToPacket(buf);
+        } else if (pkt.packetType == PacketType.CHEMICAL) {
+            pkt.chemical.write(buf);
+        }
+    }
 
-				net.fluidStored = message.fluidStack;
-				net.didTransfer = message.didFluidTransfer;
-				net.fluidScale = net.getScale();
-			}
-		}
-		
-		return null;
-	}
-	
-	public static class TransmitterUpdateMessage implements IMessage
-	{
-		public PacketType packetType;
-	
-		public Coord4D coord4D;
-	
-		public double power;
-	
-		public GasStack gasStack;
-		public Gas gasType;
-		public boolean didGasTransfer;
-	
-		public FluidStack fluidStack;
-		public Fluid fluidType;
-		public boolean didFluidTransfer;
-		
-		public int amount;
-		
-		public TransmitterUpdateMessage() {}
-	
-		public TransmitterUpdateMessage(PacketType type, Coord4D coord, Object... data)
-		{
-			packetType = type;
-			coord4D = coord;
-	
-			switch(packetType)
-			{
-				case ENERGY:
-					power = (Double)data[0];
-					break;
-				case GAS:
-					gasStack = (GasStack)data[0];
-					didGasTransfer = (Boolean)data[1];
-					break;
-				case FLUID:
-					fluidStack = (FluidStack)data[0];
-					didFluidTransfer = (Boolean)data[1];
-					break;
-			}
-		}
-	
-		@Override
-		public void toBytes(ByteBuf dataStream)
-		{
-			dataStream.writeInt(packetType.ordinal());
-	
-			dataStream.writeInt(coord4D.xCoord);
-			dataStream.writeInt(coord4D.yCoord);
-			dataStream.writeInt(coord4D.zCoord);
-			dataStream.writeInt(coord4D.dimensionId);
-	
-			switch(packetType)
-			{
-				case ENERGY:
-					dataStream.writeDouble(power);
-					break;
-				case GAS:
-					dataStream.writeInt(gasStack != null ? gasStack.getGas().getID() : -1);
-					dataStream.writeInt(gasStack != null ? gasStack.amount : 0);
-					dataStream.writeBoolean(didGasTransfer);
-					break;
-				case FLUID:
-					dataStream.writeInt(fluidStack != null ? fluidStack.getFluid().getID() : -1);
-					dataStream.writeInt(fluidStack != null ? fluidStack.amount : 0);
-					dataStream.writeBoolean(didFluidTransfer);
-					break;
-			}
-		}
-	
-		@Override
-		public void fromBytes(ByteBuf dataStream)
-		{
-			packetType = PacketType.values()[dataStream.readInt()];
-			
-			coord4D = new Coord4D(dataStream.readInt(), dataStream.readInt(), dataStream.readInt(), dataStream.readInt());
+    public static PacketTransmitterUpdate decode(PacketBuffer buf) {
+        PacketTransmitterUpdate packet = new PacketTransmitterUpdate(buf.readEnumValue(PacketType.class), buf.readUniqueId(), buf.readFloat());
+        if (packet.packetType == PacketType.FLUID) {
+            packet.fluidStack = FluidStack.readFromPacket(buf);
+        } else if (packet.packetType == PacketType.CHEMICAL) {
+            packet.chemical = BoxedChemical.read(buf);
+        }
+        return packet;
+    }
 
-			if(packetType == PacketType.ENERGY)
-			{
-				power = dataStream.readDouble();
-			}
-			else if(packetType == PacketType.GAS)
-			{
-				gasType = GasRegistry.getGas(dataStream.readInt());
-				amount = dataStream.readInt();
-				didGasTransfer = dataStream.readBoolean();
-	
-				if(gasType != null)
-				{
-					gasStack = new GasStack(gasType, amount);
-				}
-			}
-			else if(packetType == PacketType.FLUID)
-			{
-				int type = dataStream.readInt();
-				fluidType = type != -1 ? FluidRegistry.getFluid(type) : null;
-				amount = dataStream.readInt();
-				didFluidTransfer = dataStream.readBoolean();
-	
-				if(fluidType != null)
-				{
-					fluidStack = new FluidStack(fluidType, amount);
-				}
-			}
-		}
-	}
-	
-	public static enum PacketType
-	{
-		UPDATE,
-		ENERGY,
-		GAS,
-		FLUID
-	}
+    public enum PacketType {
+        ENERGY(net -> net instanceof EnergyNetwork),
+        FLUID(net -> net instanceof FluidNetwork),
+        CHEMICAL(net -> net instanceof BoxedChemicalNetwork);
+
+        private final Predicate<DynamicNetwork<?, ?, ?>> networkTypePredicate;
+
+        PacketType(Predicate<DynamicNetwork<?, ?, ?>> networkTypePredicate) {
+            this.networkTypePredicate = networkTypePredicate;
+        }
+
+        private boolean networkTypeMatches(DynamicNetwork<?, ?, ?> network) {
+            return networkTypePredicate.test(network);
+        }
+    }
 }

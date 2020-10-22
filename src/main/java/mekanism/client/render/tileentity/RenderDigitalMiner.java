@@ -1,45 +1,65 @@
 package mekanism.client.render.tileentity;
 
-import mekanism.client.model.ModelDigitalMiner;
-import mekanism.common.tile.TileEntityDigitalMiner;
-import mekanism.common.util.MekanismUtils;
-import mekanism.common.util.MekanismUtils.ResourceType;
+import com.mojang.blaze3d.matrix.MatrixStack;
+import javax.annotation.ParametersAreNonnullByDefault;
+import mekanism.client.render.MekanismRenderer;
+import mekanism.client.render.MekanismRenderer.Model3D;
+import mekanism.common.base.ProfilerConstants;
+import mekanism.common.tile.machine.TileEntityDigitalMiner;
+import net.minecraft.client.renderer.Atlases;
+import net.minecraft.client.renderer.IRenderTypeBuffer;
+import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
+import net.minecraft.profiler.IProfiler;
 
-import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
-import net.minecraft.tileentity.TileEntity;
-import cpw.mods.fml.relauncher.Side;
-import cpw.mods.fml.relauncher.SideOnly;
+@ParametersAreNonnullByDefault
+public class RenderDigitalMiner extends MekanismTileEntityRenderer<TileEntityDigitalMiner> {
 
-import org.lwjgl.opengl.GL11;
+    private static final float SCALE_FIX = 0.9999F;
+    private static final float OFFSET_FIX = 0.00005F;
+    private static Model3D model;
 
-@SideOnly(Side.CLIENT)
-public class RenderDigitalMiner extends TileEntitySpecialRenderer
-{
-	private ModelDigitalMiner model = new ModelDigitalMiner();
+    public static void resetCachedVisuals() {
+        model = null;
+    }
 
-	@Override
-	public void renderTileEntityAt(TileEntity tileEntity, double x, double y, double z, float partialTick)
-	{
-		renderAModelAt((TileEntityDigitalMiner)tileEntity, x, y, z, partialTick);
-	}
+    public RenderDigitalMiner(TileEntityRendererDispatcher renderer) {
+        super(renderer);
+    }
 
-	private void renderAModelAt(TileEntityDigitalMiner tileEntity, double x, double y, double z, float partialTick)
-	{
-		GL11.glPushMatrix();
-		GL11.glTranslatef((float)x + 0.5F, (float)y + 1.5F, (float)z + 0.5F);
+    @Override
+    protected void render(TileEntityDigitalMiner miner, float partialTick, MatrixStack matrix, IRenderTypeBuffer renderer, int light, int overlayLight, IProfiler profiler) {
+        if (miner.clientRendering && miner.getRadius() <= 64) {
+            if (model == null) {
+                model = new Model3D();
+                model.setTexture(MekanismRenderer.whiteIcon);
+                model.minX = 0.01;
+                model.minY = 0.01;
+                model.minZ = 0.01;
+                model.maxX = 0.99;
+                model.maxY = 0.99;
+                model.maxZ = 0.99;
+            }
+            //TODO: Eventually we may want to make it so that the model can support each face being a different
+            // color to make it easier to see the "depth"
+            matrix.push();
+            matrix.translate(-miner.getRadius(), miner.getMinY() - miner.getPos().getY(), -miner.getRadius());
+            matrix.scale(miner.getDiameter(), miner.getMaxY() - miner.getMinY(), miner.getDiameter());
+            //Adjust it slightly so that it does not clip into the blocks that are just on the outside of the radius
+            matrix.scale(SCALE_FIX, SCALE_FIX, SCALE_FIX);
+            matrix.translate(OFFSET_FIX, OFFSET_FIX, OFFSET_FIX);
+            MekanismRenderer.renderObject(model, matrix, renderer.getBuffer(Atlases.getTranslucentCullBlockType()),
+                  MekanismRenderer.getColorARGB(255, 255, 255, 0.8F), MekanismRenderer.FULL_LIGHT, overlayLight);
+            matrix.pop();
+        }
+    }
 
-		bindTexture(MekanismUtils.getResource(ResourceType.RENDER, "DigitalMiner" + (tileEntity.isActive ? "On" : "") + ".png"));
+    @Override
+    protected String getProfilerSection() {
+        return ProfilerConstants.DIGITAL_MINER;
+    }
 
-		switch(tileEntity.facing)
-		{
-			case 2: GL11.glRotatef(90, 0.0F, 1.0F, 0.0F); break;
-			case 3: GL11.glRotatef(270, 0.0F, 1.0F, 0.0F); break;
-			case 4: GL11.glRotatef(180, 0.0F, 1.0F, 0.0F); break;
-			case 5: GL11.glRotatef(0, 0.0F, 1.0F, 0.0F); break;
-		}
-
-		GL11.glRotatef(180F, 0.0F, 0.0F, 1.0F);
-		model.render(0.0625F, tileEntity.isActive);
-		GL11.glPopMatrix();
-	}
+    @Override
+    public boolean isGlobalRenderer(TileEntityDigitalMiner tile) {
+        return true;
+    }
 }
